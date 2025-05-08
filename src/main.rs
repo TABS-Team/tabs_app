@@ -1,23 +1,35 @@
-use bevy::prelude::*;
-use bevy::window::{WindowPlugin, WindowResolution};
-use tabs_game::constants::{DEFAULT_WIN_WIDTH, DEFAULT_WIN_HEIGHT, DEFAULT_TITLE};
-use tabs_game::scenes::song_selection::setup_song_select;
-use tabs_game::states::AppState;
+use bevy::{
+    prelude::*,
+    window::{WindowPlugin, WindowResolution, ExitCondition},
+};
+use tabs_app::states::{AppState, StartupPlugin, SongSelectPlugin};
+use tabs_app::core::config::ConfigPlugin;
+use tabs_app::widgets::UiLayerPlugin;
+use tabs_app::materials::RegisterShadersPlugin;
+
+#[cfg(not(feature = "production"))]
+use tabs_app::debug::{DebugPlugin};
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: DEFAULT_TITLE.to_string(),
-                resolution: WindowResolution::new(DEFAULT_WIN_WIDTH, DEFAULT_WIN_HEIGHT),
+        .add_plugins((
+            ConfigPlugin,
+            #[cfg(not(feature = "production"))]
+            DebugPlugin,
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "TABS".to_string(),
+                    resolution: WindowResolution::new(800.0, 600.0),
+                    ..default()
+                }),
+                exit_condition: ExitCondition::OnPrimaryClosed,
                 ..default()
             }),
-            ..default()
-        }))
+            RegisterShadersPlugin,
+            UiLayerPlugin,
+            StartupPlugin,
+            SongSelectPlugin,
+        ))
         .init_state::<AppState>()
-        .add_systems(OnEnter(AppState::SongSelect), setup_song_select)
-        // .add_systems(Update, handle_ui_button_interaction.run_if(in_state(AppState::SongSelect)))
-        // .add_systems(OnExit(AppState::SongSelect), cleanup_song_select)
-        // .add_systems(OnEnter(AppState::Gameplay), setup_gameplay)
         .run();
 }
