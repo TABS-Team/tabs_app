@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use crate::states::StartupLatch;
-use crate::core::config::AppConfig;
+use crate::file::config::AppConfig;
 
 #[derive(Resource, Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {

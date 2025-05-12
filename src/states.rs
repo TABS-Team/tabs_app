@@ -1,8 +1,8 @@
 use bevy::{
     prelude::*,
 };
-use crate::core::theme::setup_theme;
-use crate::core::settings::setup_settings;
+use crate::file::theme::setup_theme;
+use crate::file::settings::setup_settings;
 use crate::scenes::{
     setup_song_select, 
     setup_camera

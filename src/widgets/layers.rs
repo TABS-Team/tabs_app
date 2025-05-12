@@ -1,6 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use bevy::prelude::*;
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiLayer {
+    Overlay,       // Game overlays, in a traditional game you would put a healthbar here
+    Menus,      // Floating windows
+    Debug,      // Debug windows
+}
+
 #[derive(Resource, Default)]
 pub struct UiLayerStack {
     pub stacks: HashMap<UiLayer, VecDeque<Entity>>,
@@ -57,13 +65,6 @@ impl UiLayerStack {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UiLayer {
-    Overlay,       // Game overlays, in a traditional game you would put a healthbar here
-    Menus,      // Floating windows
-    Debug,      // Debug windows
 }
 
 // If someone spawns more than 10000 ui windows per layer... I will haunt them after I'm gone

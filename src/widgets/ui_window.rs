@@ -15,9 +15,7 @@ use bevy::{
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 
-use crate::widgets::UiSize;
-use crate::widgets::{UiLayer, UiLayerStack};
-use crate::materials::{AbaaMaterial};
+use crate::widgets::{UiLayer, UiLayerStack, UiContext};
 
 const LINE_HEIGHT: f32 = 20.0;
 
@@ -86,8 +84,8 @@ pub struct Footer;
 #[derive(Component, Clone)]
 pub struct UiWindow {
     pub title: String,
-    pub width: UiSize,
-    pub height: UiSize,
+    pub width: Val,
+    pub height: Val,
     pub layer: UiLayer,
     pub position: PositionType,
     pub style: UiWindowStyle,
@@ -154,8 +152,8 @@ impl Default for UiWindowStyle {
 
 pub struct UiWindowBuilder {
     title: String,
-    width: UiSize,
-    height: UiSize,
+    width: Val,
+    height: Val,
     layer: UiLayer,
     position: PositionType,
     style: UiWindowStyle,
@@ -173,17 +171,8 @@ pub struct PromoteToOsWindowEvent {
     pub window_title: String,
 }
 
-#[derive(SystemParam)]
-pub struct UiWindowContext<'w, 's> {
-    pub commands: Commands<'w, 's>,
-    pub materials: ResMut<'w, Assets<AbaaMaterial>>,
-    pub stack: ResMut<'w, UiLayerStack>,
-    pub children_query: Query<'w, 's, &'static Children>,
-    pub asset_server: Res<'w, AssetServer>
-}
-
 impl UiWindowBuilder {
-    pub fn size(mut self, width: UiSize, height: UiSize) -> Self {
+    pub fn size(mut self, width: Val, height: Val) -> Self {
         self.width = width;
         self.height = height;
         self
@@ -237,8 +226,8 @@ impl UiWindow {
     pub fn builder(title: impl Into<String>, layer: UiLayer) -> UiWindowBuilder {
         UiWindowBuilder {
             title: title.into(),
-            width: UiSize::Percent(50.0),
-            height: UiSize::Percent(50.0),
+            width: Val::Percent(50.0),
+            height: Val::Percent(50.0),
             layer,
             position: PositionType::Absolute,
             style: UiWindowStyle::default(),
@@ -246,26 +235,7 @@ impl UiWindow {
         }
     }
 
-    pub fn bundle(&self, left_margin: UiSize, top_margin: UiSize) -> UiWindowBundle {
-        let width = match self.width {
-            UiSize::Px(px) => Val::Px(px),
-            UiSize::Percent(pct) => Val::Percent(pct),
-        };
-
-        let height = match self.height {
-            UiSize::Px(px) => Val::Px(px),
-            UiSize::Percent(pct) => Val::Percent(pct),
-        };
-
-        let left = match left_margin {
-            UiSize::Px(px) => Val::Px(px),
-            UiSize::Percent(pct) => Val::Percent(pct),
-        };
-
-        let top = match top_margin {
-            UiSize::Px(px) => Val::Px(px),
-            UiSize::Percent(pct) => Val::Percent(pct),
-        };
+    pub fn bundle(&self, left_margin: Val, top_margin: Val) -> UiWindowBundle {
 
         let position = match self.options.draggable{
             true => PositionType::Absolute,
@@ -274,12 +244,12 @@ impl UiWindow {
 
         UiWindowBundle {
             node: Node {
-                width,
-                height,
+                width: self.width,
+                height: self.height,
                 position_type: position,
                 flex_direction: FlexDirection::Column,
-                left,
-                top,
+                left: left_margin,
+                top: top_margin,
                 border: UiRect::all(Val::Px(self.style.border_size)),
                 overflow: Overflow::clip_y(),
                 ..default()
@@ -293,13 +263,14 @@ impl UiWindow {
 
     pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
         self,
-        ctx: &mut UiWindowContext,
-        left_margin: UiSize,
-        top_margin: UiSize,
+        commands: &mut Commands,
+        ctx: &mut UiContext,
+        left_margin: Val,
+        top_margin: Val,
         children: F,
     ) -> Entity {
 
-        let entity = ctx.commands
+        let entity = commands
         .spawn(self.bundle(left_margin, top_margin))
         .insert(self.clone())
         .insert(WindowLayer(self.layer))
@@ -308,20 +279,20 @@ impl UiWindow {
         let mut modules: Vec<Entity> = Vec::new();
 
         if self.options.show_titlebar{
-            let title_bar_entity = Titlebar::spawn(ctx, &self.title, &self.style, entity, self.options.closeable);
+            let title_bar_entity = Titlebar::spawn(commands, ctx, &self.title, &self.style, entity, self.options.closeable);
             modules.push(title_bar_entity);
             
             if self.options.draggable{
-                Titlebar::register_observers(title_bar_entity, &mut ctx.commands);
+                Titlebar::register_observers(title_bar_entity, commands);
             }
         }
 
-        let scroll_container_entity = ScrollContainer::spawn(ctx, &self.style, children);
+        let scroll_container_entity = ScrollContainer::spawn(commands, ctx, &self.style, children);
         modules.push(scroll_container_entity);
 
         if self.options.resizeable{
-            let resize_corner = ResizeCorner::spawn(ctx, &self.style, entity);
-            let footer = ctx.commands
+            let resize_corner = ResizeCorner::spawn(commands, ctx, &self.style, entity);
+            let footer = commands
             .spawn(Node {
                 width: Val::Percent(100.0),
                 height: Val::Px(24.0),
@@ -336,11 +307,11 @@ impl UiWindow {
             modules.push(footer);
         }
 
-        ctx.commands.entity(entity).add_children(&modules);
+        commands.entity(entity).add_children(&modules);
 
-        UiWindow::register_observers(entity, &mut ctx.commands);
+        UiWindow::register_observers(entity, commands);
 
-        ctx.stack.push(self.layer, entity, &mut ctx.commands);
+        ctx.stack.push(self.layer, entity, commands);
         entity
     }
 
@@ -509,7 +480,8 @@ impl Titlebar{
     }
 
     pub fn spawn(
-        ctx: &mut UiWindowContext,
+        commands: &mut Commands,
+        ctx: &mut UiContext,
         label: &String,
         style: &UiWindowStyle,
         window_entity: Entity,
@@ -517,7 +489,7 @@ impl Titlebar{
     ) -> Entity {
         let component = Titlebar{window_entity, title: label.clone()};
         
-        let entity = ctx.commands
+        let entity = commands
             .spawn(Node {
                 width: Val::Percent(100.0),
                 height: Val::Px(24.0),
@@ -545,9 +517,9 @@ impl Titlebar{
             }).id();
 
             if closeable{
-                let close_btn_entity = CloseButton::spawn(ctx, style, window_entity);
-                CloseButton::register_observers(close_btn_entity, &mut ctx.commands);
-                ctx.commands.entity(entity).add_children(&[close_btn_entity]);
+                let close_btn_entity = CloseButton::spawn(commands, ctx, style, window_entity);
+                CloseButton::register_observers(close_btn_entity, commands);
+                commands.entity(entity).add_children(&[close_btn_entity]);
             }
 
             entity
@@ -653,11 +625,12 @@ impl ScrollContainer{
     }
 
     pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
-        ctx: &mut UiWindowContext,
+        commands: &mut Commands,
+        ctx: &mut UiContext,
         style: &UiWindowStyle,
         children: F
     ) -> Entity {
-        let content_entity = ctx.commands
+        let content_entity = commands
         .spawn(Node {
             width: Val::Percent(100.0),
             height: Val::Auto,
@@ -668,10 +641,10 @@ impl ScrollContainer{
         .with_children(|scroll_content| {
             children(scroll_content);
         }).id();
-        let scroll_bar_entity = ScrollBar::spawn(ctx, style, content_entity);
+        let scroll_bar_entity = ScrollBar::spawn(commands, ctx, style, content_entity);
         let component = ScrollContainer::new(scroll_bar_entity);
 
-        let entity = ctx.commands
+        let entity = commands
         .spawn(Node {
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
@@ -684,8 +657,8 @@ impl ScrollContainer{
         .add_children(&[content_entity, scroll_bar_entity])
         .id();
 
-        ScrollBar::register_observers(scroll_bar_entity, &mut ctx.commands);
-        ScrollContainer::register_observers(entity, &mut ctx.commands);
+        ScrollBar::register_observers(scroll_bar_entity, commands);
+        ScrollContainer::register_observers(entity, commands);
         entity
     }
     pub fn register_observers(entity: Entity, commands: &mut Commands){
@@ -728,9 +701,9 @@ impl ScrollBar{
         component
     }
 
-    pub fn spawn(ctx: &mut UiWindowContext, style: &UiWindowStyle, scroll_content_entity: Entity) -> Entity{
+    pub fn spawn(commands: &mut Commands, ctx: &mut UiContext, style: &UiWindowStyle, scroll_content_entity: Entity) -> Entity{
         let component = ScrollBar::new(scroll_content_entity);
-        ctx.commands.spawn(Node {
+        commands.spawn(Node {
             position_type: PositionType::Absolute,
             right: Val::Px(2.0),
             top: Val::Px(2.0),
@@ -786,13 +759,14 @@ impl CloseButton{
     }
 
     pub fn spawn(
-        ctx: &mut UiWindowContext,
+        commands: &mut Commands,
+        ctx: &mut UiContext,
         style: &UiWindowStyle,
         window_entity: Entity
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = CloseButton::new(window_entity);
-        ctx.commands.spawn(Node {
+        commands.spawn(Node {
             width: Val::Px(24.0),
             height: Val::Px(24.0),
             justify_content: JustifyContent::Center,
@@ -853,14 +827,15 @@ impl ResizeCorner {
     }
 
     pub fn spawn(
-        ctx: &mut UiWindowContext,
+        commands: &mut Commands,
+        ctx: &mut UiContext,
         style: &UiWindowStyle,
         window_entity: Entity,
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = ResizeCorner::new(window_entity);
 
-        let entity = ctx.commands
+        let entity = commands
             .spawn(Node {
                 width: Val::Px(24.0),
                 height: Val::Px(24.0),
@@ -889,7 +864,7 @@ impl ResizeCorner {
             })
             .id();
 
-            ResizeCorner::register_observers(entity, &mut ctx.commands);
+            ResizeCorner::register_observers(entity, commands);
 
             entity
 

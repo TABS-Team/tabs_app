@@ -3,8 +3,9 @@ use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin}
 };
 
-use crate::widgets::{UiSize, UiWindow, UiWindowContext, UiLayer, UiWindowStyle};
-use crate::core::{
+use crate::states::{AppState};
+use crate::widgets::{UiWindow, UiContext, UiLayer, UiWindowStyle};
+use crate::file::{
     settings::Settings,
     theme::Themes,
 };
@@ -12,25 +13,20 @@ use crate::core::{
 #[derive(Component)]
 pub struct FpsText;
 
-pub fn spawn_fps_counter(mut ctx: UiWindowContext, themes: Res<Themes>, config: Res<Settings>) {
+pub fn spawn_fps_counter(mut commands: Commands, mut ctx: UiContext, themes: Res<Themes>, config: Res<Settings>, mut next_state: ResMut<NextState<AppState>>) {
     let theme = &themes.get(config.start_theme.as_str()).expect("Theme 'default' not found");
 
     let debug_window_style = UiWindowStyle {
-        background_color: theme.debug.background,
-        border_color: theme.debug.border_color,
-        border_size: theme.debug.border_thickness,
-        title_font_size: theme.debug.title_font_size,
-        title_color: theme.debug.title_text_color,
-        titlebar_color: theme.debug.titlebar_color,
-        titlebar_padding: theme.debug.titlebar_padding,
-        content_padding: theme.debug.content_padding,
-        scrollbar_color: theme.debug.scrollbar_color,
-        scrollbar_width: theme.debug.scrollbar_width,
+        background_color: theme.background_default,
+        border_color: theme.third,
+        title_color: theme.text_primary,
+        titlebar_color: theme.secondary,
+        scrollbar_color: theme.primary,
         ..default()
     };
 
-    UiWindow::builder("Debug Menu", UiLayer::Overlay)
-    .size(UiSize::Percent(30.0), UiSize::Px(200.0))
+    UiWindow::builder("Debug Menu", UiLayer::Debug)
+    .size(Val::Percent(30.0), Val::Px(200.0))
     .style(debug_window_style)
     .resizable(true)
     .draggable(true)
@@ -38,9 +34,10 @@ pub fn spawn_fps_counter(mut ctx: UiWindowContext, themes: Res<Themes>, config: 
     .show_titlebar(true)
     .build()
     .spawn(
+        &mut commands,
         &mut ctx,
-        UiSize::Px(20.0),
-        UiSize::Px(20.0),
+        Val::Px(20.0),
+        Val::Px(20.0),
         |parent| {
             parent.spawn((
                 Text::new("FPS: ",),
@@ -71,6 +68,9 @@ pub fn spawn_fps_counter(mut ctx: UiWindowContext, themes: Res<Themes>, config: 
             }
         },
     );
+
+    next_state.set(AppState::SongSelect);
+    
 }
 
 pub fn update_fps_text(
