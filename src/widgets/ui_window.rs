@@ -1,35 +1,22 @@
 use bevy::{
     prelude::*,
-    ui::{BackgroundColor, BorderColor},
-    ecs::{
-        system::SystemParam,
-        observer::ObservedBy
-    },
-    winit::{
-        cursor::{CursorIcon},
-        WinitWindows,
-    },
-    window::{SystemCursorIcon, PrimaryWindow, WindowRef},
+    ui::{ BackgroundColor, BorderColor },
+    ecs::{ observer::ObservedBy },
+    winit::{ cursor::{ CursorIcon }, WinitWindows },
+    window::{ SystemCursorIcon, PrimaryWindow, WindowRef },
     render::camera::RenderTarget,
 };
+use winit::dpi::{ PhysicalPosition, PhysicalSize };
 
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use crate::widgets::{ UiLayer, UiLayerStack, UiContext };
 
-use crate::widgets::{UiLayer, UiLayerStack, UiContext};
-
-const LINE_HEIGHT: f32 = 20.0;
+const SPAWNMARGIN: i32 = 10;
 
 pub struct UiWindowPlugin;
 
 impl Plugin for UiWindowPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .add_systems(Update, update_scrollbar_height)
-            .add_event::<ScrollbarMovedEvent>()
-            .add_event::<PromoteToOsWindowEvent>()
-            .add_systems(Update, sync_scrollbar_to_content)
-            .add_systems(Update, detect_os_window_reentry)
-        ;
+        app.add_event::<PromoteToOsWindowEvent>().add_systems(Update, detect_os_window_reentry);
     }
 }
 
@@ -52,21 +39,7 @@ pub struct Titlebar {
 }
 
 #[derive(Component)]
-pub struct ScrollContainer{
-    pub scroll_bar_entity: Entity,
-}
-
-#[derive(Component)]
-pub struct ScrollBar {
-    pub max_scroll_position: f32,
-    pub content_height: f32,
-    pub container_height: f32,
-    pub scrollbar_height: f32,
-    pub scroll_content_entity: Entity,
-}
-
-#[derive(Component)]
-pub struct ScrollContent;
+struct Content;
 
 #[derive(Component)]
 pub struct CloseButton {
@@ -81,6 +54,12 @@ pub struct ResizeCorner {
 #[derive(Component)]
 pub struct Footer;
 
+#[derive(Event)]
+pub struct PromoteToOsWindowEvent {
+    pub window_entity: Entity,
+    pub window_title: String,
+}
+
 #[derive(Component, Clone)]
 pub struct UiWindow {
     pub title: String,
@@ -93,14 +72,14 @@ pub struct UiWindow {
 }
 
 #[derive(Component)]
-pub struct OsWindow{
+pub struct OsWindow {
     pub os_window_camera_entity: Entity,
     pub ui_window_entity: Entity,
 }
 
-impl OsWindow{
-    fn new(camera: Entity, ui_window: Entity) -> Self{
-        OsWindow{
+impl OsWindow {
+    fn new(camera: Entity, ui_window: Entity) -> Self {
+        OsWindow {
             os_window_camera_entity: camera,
             ui_window_entity: ui_window,
         }
@@ -113,6 +92,7 @@ pub struct UiWindowOptions {
     pub closeable: bool,
     pub draggable: bool,
     pub show_titlebar: bool,
+    pub camera: Option<Entity>,
 }
 
 #[derive(Clone)]
@@ -127,8 +107,6 @@ pub struct UiWindowStyle {
     pub resize_handle_color: Color,
     pub titlebar_padding: [f32; 4],
     pub content_padding: [f32; 4],
-    pub scrollbar_color: Color,
-    pub scrollbar_width: f32,
 }
 
 impl Default for UiWindowStyle {
@@ -142,10 +120,8 @@ impl Default for UiWindowStyle {
             close_button_color: Color::WHITE,
             resize_handle_color: Color::srgb(0.66, 0.66, 0.66),
             titlebar_color: Color::srgb(0.15, 0.15, 0.15),
-            titlebar_padding: [6.0, 6.0, 6.0, 6.0],
-            content_padding: [8.0, 8.0, 8.0, 8.0],
-            scrollbar_color: Color::srgb(0.3, 0.3, 0.5),
-            scrollbar_width: 6.0,
+            titlebar_padding: [6.0; 4],
+            content_padding: [8.0; 4],
         }
     }
 }
@@ -158,17 +134,6 @@ pub struct UiWindowBuilder {
     position: PositionType,
     style: UiWindowStyle,
     options: UiWindowOptions,
-}
-
-#[derive(Event)]
-pub struct ScrollbarMovedEvent {
-    pub scrollbar: Entity,
-}
-
-#[derive(Event)]
-pub struct PromoteToOsWindowEvent {
-    pub window_entity: Entity,
-    pub window_title: String,
 }
 
 impl UiWindowBuilder {
@@ -208,7 +173,16 @@ impl UiWindowBuilder {
         self
     }
 
+    pub fn camera(mut self, camera: Entity) -> Self {
+        self.options.camera = Some(camera);
+        self
+    }
+
     pub fn build(self) -> UiWindow {
+        if self.options.camera.is_none() {
+            warn!("UiWindowBuilder: No camera set, using default camera.");
+        }
+
         UiWindow {
             title: self.title,
             width: self.width,
@@ -222,7 +196,6 @@ impl UiWindowBuilder {
 }
 
 impl UiWindow {
-
     pub fn builder(title: impl Into<String>, layer: UiLayer) -> UiWindowBuilder {
         UiWindowBuilder {
             title: title.into(),
@@ -235,21 +208,16 @@ impl UiWindow {
         }
     }
 
-    pub fn bundle(&self, left_margin: Val, top_margin: Val) -> UiWindowBundle {
-
-        let position = match self.options.draggable{
-            true => PositionType::Absolute,
-            false => self.position
-        };
-
+    pub fn bundle(&self, left: Val, top: Val) -> UiWindowBundle {
+        let pos_type = if self.options.draggable { PositionType::Absolute } else { self.position };
         UiWindowBundle {
             node: Node {
                 width: self.width,
                 height: self.height,
-                position_type: position,
+                position_type: pos_type,
                 flex_direction: FlexDirection::Column,
-                left: left_margin,
-                top: top_margin,
+                left,
+                top,
                 border: UiRect::all(Val::Px(self.style.border_size)),
                 overflow: Overflow::clip_y(),
                 ..default()
@@ -262,136 +230,176 @@ impl UiWindow {
     }
 
     pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
-        self,
+        &self,
         commands: &mut Commands,
-        ctx: &mut UiContext,
-        left_margin: Val,
-        top_margin: Val,
-        children: F,
+        ctx: &UiContext,
+        layer_stack: &mut UiLayerStack,
+        left: Val,
+        top: Val,
+        children: F
     ) -> Entity {
+        let window = commands
+            .spawn(self.bundle(left, top))
+            .insert(self.clone())
+            .insert(WindowLayer(self.layer))
+            .id();
 
-        let entity = commands
-        .spawn(self.bundle(left_margin, top_margin))
-        .insert(self.clone())
-        .insert(WindowLayer(self.layer))
-        .id();
+        let mut modules = Vec::new();
 
-        let mut modules: Vec<Entity> = Vec::new();
-
-        if self.options.show_titlebar{
-            let title_bar_entity = Titlebar::spawn(commands, ctx, &self.title, &self.style, entity, self.options.closeable);
-            modules.push(title_bar_entity);
-            
-            if self.options.draggable{
-                Titlebar::register_observers(title_bar_entity, commands);
+        if self.options.show_titlebar {
+            let tb = Titlebar::spawn(
+                commands,
+                ctx,
+                &self.title,
+                &self.style,
+                window,
+                self.options.closeable
+            );
+            modules.push(tb);
+            if self.options.draggable {
+                Titlebar::register_observers(tb, commands);
             }
         }
-
-        let scroll_container_entity = ScrollContainer::spawn(commands, ctx, &self.style, children);
-        modules.push(scroll_container_entity);
-
-        if self.options.resizeable{
-            let resize_corner = ResizeCorner::spawn(commands, ctx, &self.style, entity);
-            let footer = commands
+        let content_entity = commands
             .spawn(Node {
+                flex_direction: FlexDirection::Column,
                 width: Val::Percent(100.0),
-                height: Val::Px(24.0),
-                justify_content: JustifyContent::FlexEnd,
-                align_items: AlignItems::Center,
-                padding: UiRect::horizontal(Val::Px(8.0)),
+                height: Val::Percent(100.0),
+                overflow: Overflow::scroll_y(),
                 ..default()
             })
-            .insert(BackgroundColor(self.style.background_color))
-            .insert(Footer)
-            .add_children(&[resize_corner]).id();
+            .insert(Content)
+            .with_children(|parent| {
+                children(parent);
+            })
+            .id();
+
+        modules.push(content_entity);
+
+        if self.options.resizeable {
+            let resize_corner = ResizeCorner::spawn(commands, ctx, &self.style, window);
+            let footer = commands
+                .spawn(Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(24.0),
+                    justify_content: JustifyContent::FlexEnd,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(Val::Px(self.style.content_padding[0])),
+                    ..default()
+                })
+                .insert(BackgroundColor(self.style.background_color))
+                .insert(Footer)
+                .add_children(&[resize_corner])
+                .id();
             modules.push(footer);
         }
 
-        commands.entity(entity).add_children(&modules);
+        commands.entity(window).add_children(&modules);
+        UiWindow::register_observers(window, commands);
+        layer_stack.push(self.layer, window, commands);
 
-        UiWindow::register_observers(entity, commands);
-
-        ctx.stack.push(self.layer, entity, commands);
-        entity
+        window
     }
 
-    fn register_observers(
-        entity: Entity, 
-        commands: &mut Commands,
-    ) {
-        commands.entity(entity)
+    fn register_observers(entity: Entity, commands: &mut Commands) {
+        commands
+            .entity(entity)
             .observe(
-                |trigger: Trigger<Pointer<Pressed>>, 
-                 mut commands: Commands, 
-                 mut stack: ResMut<UiLayerStack>, 
-                 layers: Query<&WindowLayer>| 
-            {
-                let clicked = trigger.target();
-
-                if let Ok(layer) = layers.get(clicked) {
-                    stack.bring_to_front(layer.0, clicked, &mut commands);
+                |
+                    trigger: Trigger<Pointer<Pressed>>,
+                    mut commands: Commands,
+                    mut stack: ResMut<UiLayerStack>,
+                    layers: Query<&WindowLayer>
+                | {
+                    if let Ok(WindowLayer(layer)) = layers.get(trigger.target()) {
+                        stack.bring_to_front(*layer, trigger.target(), &mut commands);
+                    }
                 }
-            });
-
+            );
     }
 
     fn convert_to_os_window(
         window_entity: Entity,
         commands: &mut Commands,
         children_query: &Query<&Children>,
-        scroll_container_query: &Query<&ScrollContainer>,
+        content_container_query: &Query<&Content>,
         titlebar_query: &Query<&Titlebar>,
         footer_query: &Query<&Footer>,
         computed_node_query: &Query<&ComputedNode>,
-        transform_query: &Query<&GlobalTransform>,
         node_query: &mut Query<&mut Node>,
         winit_windows: &NonSend<WinitWindows>,
-        primary_window_entity: Entity,
+        primary_window_entity: Entity
     ) {
-        let Ok(children) = children_query.get(window_entity) else { return };
-    
-        let Some(scroll_container_entity) = children
+        let Ok(children) = children_query.get(window_entity) else {
+            return;
+        };
+
+        let Some(content_container_entity) = children
             .iter()
-            .find(|child| scroll_container_query.get(*child).is_ok()) else { return };
-    
-        let Ok(size) = computed_node_query.get(scroll_container_entity) else { return };
-    
-        if let Some(titlebar_entity) = children
-            .iter()
-            .find(|child| titlebar_query.get(*child).is_ok())
+            .find(|child| content_container_query.get(*child).is_ok()) else {
+            return;
+        };
+
+        let Ok(size) = computed_node_query.get(content_container_entity) else {
+            return;
+        };
+
+        if
+            let Some(titlebar_entity) = children
+                .iter()
+                .find(|child| titlebar_query.get(*child).is_ok())
         {
             commands.entity(titlebar_entity).remove::<ObservedBy>();
-            if let Ok(mut titlebar_node) = node_query.get_mut(titlebar_entity){
+            if let Ok(mut titlebar_node) = node_query.get_mut(titlebar_entity) {
                 titlebar_node.display = Display::None;
             }
         }
-    
-        if let Some(footer_entity) = children
-            .iter()
-            .find(|child| footer_query.get(*child).is_ok())
-        {
-            if let Ok(mut footer_node) = node_query.get_mut(footer_entity){
+
+        if let Some(footer_entity) = children.iter().find(|child| footer_query.get(*child).is_ok()) {
+            if let Ok(mut footer_node) = node_query.get_mut(footer_entity) {
                 footer_node.display = Display::None;
             }
         }
-    
+
         let title = titlebar_query
             .iter()
             .find(|t| t.window_entity == window_entity)
             .map(|t| t.title.clone())
             .unwrap_or("Untitled".into());
-        
-        let Some(primary_window) = winit_windows.get_window(primary_window_entity) else {return};
+
+        let Some(primary_window) = winit_windows.get_window(primary_window_entity) else {
+            return;
+        };
         let primary_position = primary_window.outer_position().unwrap();
-    
-        let Ok(transform) = transform_query.get(window_entity) else { return };
-        let translation = transform.translation();
-        let ui_window_position = Vec2::new(translation.x, translation.y);
-        let new_window_position = IVec2::new(
-            primary_position.x + ui_window_position.x as i32,
-            primary_position.y + ui_window_position.y as i32,
-        );
-    
+
+        let Ok(node) = node_query.get(window_entity) else {
+            return;
+        };
+        let (Val::Px(left), Val::Px(top)) = (node.left, node.top) else {
+            return;
+        };
+
+        let PhysicalSize { width: screen_w, height: screen_h } = primary_window.inner_size();
+        let screen_w = screen_w as f32;
+        let screen_h = screen_h as f32;
+
+        let mut spawn_x = primary_position.x + (left as i32);
+        let mut spawn_y = primary_position.y + (top as i32);
+
+        if left < 0.0 {
+            spawn_x -= (size.size.x as i32) + SPAWNMARGIN;
+        } else if left + size.size.x > screen_w {
+            spawn_x += SPAWNMARGIN;
+        }
+
+        if top < 0.0 {
+            spawn_y -= (size.size.y as i32) + SPAWNMARGIN;
+        } else if top + size.size.y > screen_h {
+            spawn_y += SPAWNMARGIN;
+        }
+
+        let new_window_position = IVec2::new(spawn_x, spawn_y);
+
         let new_window_entity = commands
             .spawn(Window {
                 resolution: (size.size.x, size.size.y).into(),
@@ -399,8 +407,9 @@ impl UiWindow {
                 position: WindowPosition::At(new_window_position),
                 decorations: true,
                 ..default()
-            }).id();
-    
+            })
+            .id();
+
         let camera_entity = commands
             .spawn((
                 Camera {
@@ -410,13 +419,14 @@ impl UiWindow {
                 Camera2d::default(),
             ))
             .id();
-    
+
         if let Ok(mut window_node) = node_query.get_mut(window_entity) {
             window_node.width = Val::Percent(100.0);
             window_node.height = Val::Percent(100.0);
             window_node.top = Val::Px(0.0);
             window_node.left = Val::Px(0.0);
         }
+        commands.entity(window_entity).remove::<UiTargetCamera>();
         commands.entity(window_entity).insert(UiTargetCamera(camera_entity));
         commands.entity(new_window_entity).insert(OsWindow::new(camera_entity, window_entity));
     }
@@ -427,53 +437,99 @@ impl UiWindow {
         winit_windows: &NonSend<WinitWindows>,
         children_query: &Query<&Children>,
         os_window_query: &Query<&OsWindow>,
+        ui_window_query: &Query<&UiWindow>,
         titlebar_query: &Query<&Titlebar>,
         footer_query: &Query<&Footer>,
         node_query: &mut Query<&mut Node>,
+        primary_window_entity: Entity
     ) {
-        let Ok(os_window) = os_window_query.get(os_window_entity) else { return };
+        let Ok(os_window) = os_window_query.get(os_window_entity) else {
+            return;
+        };
         let window_entity = os_window.ui_window_entity;
-        let Ok(children) = children_query.get(window_entity) else { return };
-    
-        if let Some(titlebar_entity) = children
-            .iter()
-            .find(|child| titlebar_query.get(*child).is_ok())
+        let Ok(children) = children_query.get(window_entity) else {
+            return;
+        };
+
+        if
+            let Some(titlebar_entity) = children
+                .iter()
+                .find(|child| titlebar_query.get(*child).is_ok())
         {
             Titlebar::register_observers(titlebar_entity, commands);
             if let Ok(mut titlebar_node) = node_query.get_mut(titlebar_entity) {
                 titlebar_node.display = Display::Flex;
             }
         }
-    
-        if let Some(footer_entity) = children
-            .iter()
-            .find(|child| footer_query.get(*child).is_ok())
-        {
+
+        if let Some(footer_entity) = children.iter().find(|child| footer_query.get(*child).is_ok()) {
             if let Ok(mut footer_node) = node_query.get_mut(footer_entity) {
                 footer_node.display = Display::Flex;
             }
         }
-    
-        let Some(winit_window) = winit_windows.get_window(os_window_entity) else { return };
+
+        let Some(winit_window) = winit_windows.get_window(os_window_entity) else {
+            return;
+        };
         let size: PhysicalSize<u32> = winit_window.outer_size();
-        let Ok(position): Result<PhysicalPosition<i32>, _> = winit_window.outer_position() else { return };
-    
+        let Ok(position): Result<PhysicalPosition<i32>, _> = winit_window.outer_position() else {
+            return;
+        };
+
         if let Ok(mut window_node) = node_query.get_mut(window_entity) {
-            window_node.width = Val::Px(size.width as f32);
-            window_node.height = Val::Px(size.height as f32);
-            window_node.left = Val::Px(position.x as f32);
-            window_node.top = Val::Px(position.y as f32);
+            let primary_wnd = winit_windows
+                .get_window(primary_window_entity)
+                .expect("Primary OS window not found");
+            let primary_pos = primary_wnd.outer_position().unwrap();
+            let scale = primary_wnd.scale_factor() as f32;
+            let ui_x = ((position.x - primary_pos.x) as f32) / scale;
+            let ui_y = ((position.y - primary_pos.y) as f32) / scale;
+
+            let ui_w = (size.width as f32) / scale;
+            let ui_h = (size.height as f32) / scale;
+
+            window_node.width = Val::Px(ui_w);
+            window_node.height = Val::Px(ui_h);
+
+            const SPAWNMARGIN: f32 = 10.0;
+
+            let from_top = ui_y + ui_h * 0.5 < 0.0;
+            let from_bottom = ui_y + ui_h * 0.5 > (primary_wnd.inner_size().height as f32) / scale;
+            let from_left = ui_x + ui_w * 0.5 < 0.0;
+            let from_right = ui_x + ui_w * 0.5 > (primary_wnd.inner_size().width as f32) / scale;
+            let final_x = if from_left {
+                SPAWNMARGIN
+            } else if from_right {
+                (primary_wnd.inner_size().width as f32) / scale - ui_w - SPAWNMARGIN
+            } else {
+                ui_x
+            };
+
+            let final_y = if from_top {
+                SPAWNMARGIN
+            } else if from_bottom {
+                (primary_wnd.inner_size().height as f32) / scale - ui_h - SPAWNMARGIN
+            } else {
+                ui_y
+            };
+            window_node.left = Val::Px(final_x);
+            window_node.top = Val::Px(final_y);
         }
-    
+
         commands.entity(window_entity).remove::<UiTargetCamera>();
+        if let Ok(ui_window) = ui_window_query.get(window_entity) {
+            if let Some(camera_entity) = ui_window.options.camera {
+                commands.entity(window_entity).insert(UiTargetCamera(camera_entity));
+            }
+        }
         commands.entity(os_window.os_window_camera_entity).despawn();
         commands.entity(os_window_entity).despawn();
     }
 }
 
-impl Titlebar{
-    pub fn default() -> Self{
-        Titlebar{
+impl Titlebar {
+    pub fn default() -> Self {
+        Titlebar {
             window_entity: Entity::PLACEHOLDER,
             title: "".to_string(),
         }
@@ -481,14 +537,14 @@ impl Titlebar{
 
     pub fn spawn(
         commands: &mut Commands,
-        ctx: &mut UiContext,
+        ctx: &UiContext,
         label: &String,
         style: &UiWindowStyle,
         window_entity: Entity,
         closeable: bool
     ) -> Entity {
-        let component = Titlebar{window_entity, title: label.clone()};
-        
+        let component = Titlebar { window_entity, title: label.clone() };
+
         let entity = commands
             .spawn(Node {
                 width: Val::Percent(100.0),
@@ -514,245 +570,137 @@ impl Titlebar{
                         ..default()
                     })
                     .insert(TextColor(style.title_color));
-            }).id();
+            })
+            .id();
 
-            if closeable{
-                let close_btn_entity = CloseButton::spawn(commands, ctx, style, window_entity);
-                CloseButton::register_observers(close_btn_entity, commands);
-                commands.entity(entity).add_children(&[close_btn_entity]);
-            }
+        if closeable {
+            let close_btn_entity = CloseButton::spawn(commands, ctx, style, window_entity);
+            CloseButton::register_observers(close_btn_entity, commands);
+            commands.entity(entity).add_children(&[close_btn_entity]);
+        }
 
-            entity
-            
+        entity
     }
 
-    pub fn register_observers(entity: Entity, commands: &mut Commands){
-        commands.entity(entity).observe(
-            move |trigger: Trigger<Pointer<Drag>>, 
-                  title_bars: Query<&Titlebar>,
-                  mut nodes: Query<&mut Node>,
-                  mut commands: Commands,
-                  children_query: Query<&Children>,
-                  scroll_container_query: Query<&ScrollContainer>,
-                  titlebar_query: Query<&Titlebar>,
-                  footer_query: Query<&Footer>,
-                  computed_node_query: Query<&ComputedNode>,
-                  winit_windows: NonSend<WinitWindows>,
-                  primary_window: Query<Entity, With<PrimaryWindow>>,
-                  transform_query: Query<&GlobalTransform>,
-                  window_query: Query<&Window>| 
-            {
-                let drag = trigger.event();
-                let Ok(title_bar) = title_bars.get(trigger.target()) else {return};
-                let window_entity = title_bar.window_entity;
-        
-                if let Ok(mut node) = nodes.get_mut(window_entity) {
-                    if let Val::Px(ref mut left) = node.left {
-                        *left += drag.delta.x;
-                    }
-                    if let Val::Px(ref mut top) = node.top {
-                        *top += drag.delta.y;
-                    }
-        
-                    if let Ok(primary_window_entity) = primary_window.single() {
-                        let Ok(window) = window_query.get(primary_window_entity) else {return};
-                        let width = window.resolution.physical_width() as f32;
-                        let height = window.resolution.physical_height() as f32;
-        
-                        if let (Val::Px(left), Val::Px(top)) = (node.left, node.top) {
-                            if left < 0.0 || top < 0.0 || left > width || top > height {
-                                UiWindow::convert_to_os_window(
-                                    window_entity,
-                                    &mut commands,
-                                    &children_query,
-                                    &scroll_container_query,
-                                    &titlebar_query,
-                                    &footer_query,
-                                    &computed_node_query,
-                                    &transform_query,
-                                    &mut nodes,
-                                    &winit_windows,
-                                    primary_window_entity
-                                );
+    pub fn register_observers(entity: Entity, commands: &mut Commands) {
+        commands
+            .entity(entity)
+            .observe(
+                move |
+                    trigger: Trigger<Pointer<Drag>>,
+                    title_bars: Query<&Titlebar>,
+                    mut nodes: Query<&mut Node>,
+                    mut commands: Commands,
+                    children_query: Query<&Children>,
+                    content_container_query: Query<&Content>,
+                    titlebar_query: Query<&Titlebar>,
+                    footer_query: Query<&Footer>,
+                    computed_node_query: Query<&ComputedNode>,
+                    winit_windows: NonSend<WinitWindows>,
+                    primary_window: Query<Entity, With<PrimaryWindow>>
+                | {
+                    let drag = trigger.event();
+                    let Ok(title_bar) = title_bars.get(trigger.target()) else {
+                        return;
+                    };
+                    let window_entity = title_bar.window_entity;
+
+                    if let Ok(mut node) = nodes.get_mut(window_entity) {
+                        if let Val::Px(ref mut left) = node.left {
+                            *left += drag.delta.x;
+                        }
+                        if let Val::Px(ref mut top) = node.top {
+                            *top += drag.delta.y;
+                        }
+
+                        if let Ok(primary_window_entity) = primary_window.single() {
+                            let winit_window = winit_windows
+                                .get_window(primary_window_entity)
+                                .expect("Primary window not found");
+
+                            let PhysicalSize { width, height } = winit_window.inner_size();
+                            let screen_w = width as f32;
+                            let screen_h = height as f32;
+                            let computed = computed_node_query
+                                .get(window_entity)
+                                .expect("ComputedNode missing");
+                            let node_w = computed.size.x;
+                            let node_h = computed.size.y;
+                            if let (Val::Px(left), Val::Px(top)) = (node.left, node.top) {
+                                let center_x = left + node_w * 0.5;
+                                let center_y = top + node_h * 0.5;
+                                let half_out =
+                                    center_x < 0.0 ||
+                                    center_y < 0.0 ||
+                                    center_x > screen_w ||
+                                    center_y > screen_h;
+
+                                if half_out {
+                                    UiWindow::convert_to_os_window(
+                                        window_entity,
+                                        &mut commands,
+                                        &children_query,
+                                        &content_container_query,
+                                        &titlebar_query,
+                                        &footer_query,
+                                        &computed_node_query,
+                                        &mut nodes,
+                                        &winit_windows,
+                                        primary_window_entity
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            },
-        )
-        .observe(
-            move |_: Trigger<Pointer<DragEnd>>, window: Single<Entity, With<Window>>, mut commands: Commands| {
-                commands
-                .entity(*window)
-                .insert(CursorIcon::System(SystemCursorIcon::Grab));
-            },
-        )
-        .observe(
-            move |_: Trigger<Pointer<DragStart>>, window: Single<Entity, With<Window>>, mut commands: Commands| {
-                commands
-                .entity(*window)
-                .insert(CursorIcon::System(SystemCursorIcon::Grabbing));
-            },
-        )
-        .observe(
-            move |_: Trigger<Pointer<Over>>, window: Single<Entity, With<Window>>, mut commands: Commands| {
-                commands
-                .entity(*window)
-                .insert(CursorIcon::System(SystemCursorIcon::Grab));
-            },
-        )
-        .observe(
-            move |_: Trigger<Pointer<Out>>, window: Single<Entity, With<Window>>, mut commands: Commands| {
-                commands
-                .entity(*window)
-                .insert(CursorIcon::System(SystemCursorIcon::Default));
-            },
-        );
-    }
-}
-
-impl ScrollContainer{
-    pub fn default() -> Self{
-        ScrollContainer{
-            scroll_bar_entity: Entity::PLACEHOLDER,
-        }
-    }
-    
-    pub fn new(scroll_bar_entity: Entity) -> Self{
-        let mut scroll_container = ScrollContainer::default();
-        scroll_container.scroll_bar_entity = scroll_bar_entity;
-        scroll_container
-    }
-
-    pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
-        commands: &mut Commands,
-        ctx: &mut UiContext,
-        style: &UiWindowStyle,
-        children: F
-    ) -> Entity {
-        let content_entity = commands
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Auto,
-            flex_direction: FlexDirection::Column,
-            ..default()
-        })
-        .insert(ScrollContent)
-        .with_children(|scroll_content| {
-            children(scroll_content);
-        }).id();
-        let scroll_bar_entity = ScrollBar::spawn(commands, ctx, style, content_entity);
-        let component = ScrollContainer::new(scroll_bar_entity);
-
-        let entity = commands
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            overflow: Overflow::scroll_y(),
-            ..default()
-        })
-        .insert(BackgroundColor(style.background_color))
-        .insert(component)
-        .add_children(&[content_entity, scroll_bar_entity])
-        .id();
-
-        ScrollBar::register_observers(scroll_bar_entity, commands);
-        ScrollContainer::register_observers(entity, commands);
-        entity
-    }
-    pub fn register_observers(entity: Entity, commands: &mut Commands){
-        commands.entity(entity).observe(
-            move |event: Trigger<Pointer<Scroll>>,
-                    scroll_container_query: Query<&ScrollContainer>,
-                    mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
-                    mut event_writer: EventWriter<ScrollbarMovedEvent>| {
-                let scroll = event.event();
-                let Ok(scroll_container) = scroll_container_query.get(event.target()) else {return;};
-                if let Ok((node, scrollbar)) = scrollbar_query.get_mut(scroll_container.scroll_bar_entity) {
-                    match node.height {
-                        Val::Px(h) if h <= 0.0 => return,
-                        Val::Percent(p) if p <= 0.0 => return,
-                        _ => {}
-                    }
-                    ScrollBar::move_scrollbar(node, scrollbar, scroll.y * LINE_HEIGHT);
-                    event_writer.write(ScrollbarMovedEvent { scrollbar: scroll_container.scroll_bar_entity });
+            )
+            .observe(
+                move |
+                    _: Trigger<Pointer<DragEnd>>,
+                    window: Single<Entity, With<Window>>,
+                    mut commands: Commands
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grab));
                 }
-
-            },
-        );
-    }
-}
-
-impl ScrollBar{
-    pub fn default() -> Self{
-        ScrollBar{
-            max_scroll_position: 0.0,
-            content_height: 0.0,
-            container_height: 0.0,
-            scrollbar_height: 0.0,
-            scroll_content_entity: Entity::PLACEHOLDER,
-        }
-    }
-
-    pub fn new(scroll_container: Entity) -> Self{
-        let mut component = ScrollBar::default();
-        component.scroll_content_entity = scroll_container;
-        component
-    }
-
-    pub fn spawn(commands: &mut Commands, ctx: &mut UiContext, style: &UiWindowStyle, scroll_content_entity: Entity) -> Entity{
-        let component = ScrollBar::new(scroll_content_entity);
-        commands.spawn(Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(2.0),
-            top: Val::Px(2.0),
-            width: Val::Px(style.scrollbar_width),
-            height: Val::Percent(0.0),
-            ..default()
-        })
-        .insert(BackgroundColor(style.scrollbar_color))
-        .insert(component)
-        .id()
-    }
-
-    pub fn register_observers(entity: Entity, commands: &mut Commands){
-        commands.entity(entity).observe(
-            move |trigger: Trigger<Pointer<Drag>>,
-                    mut node_query: Query<(&mut Node, &ScrollBar), With<ScrollBar>>,
-                    mut ev_writer: EventWriter<ScrollbarMovedEvent>| {
-                let drag = trigger.event();
-                if let Ok((node, scrollbar)) = node_query.get_mut(trigger.target()){
-                    ScrollBar::move_scrollbar(node, scrollbar, -drag.delta.y);
-                    ev_writer.write(ScrollbarMovedEvent { scrollbar: trigger.target() });
+            )
+            .observe(
+                move |
+                    _: Trigger<Pointer<DragStart>>,
+                    window: Single<Entity, With<Window>>,
+                    mut commands: Commands
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grabbing));
                 }
-            },
-        );
-    }
-
-    fn move_scrollbar(
-        mut node: Mut<Node>,
-        scrollbar: &ScrollBar,
-        delta_y: f32,
-    ) {
-        let current_top = match node.top {
-            Val::Px(current) => current,
-            _ => 0.0,
-        };
-    
-        let new_top = (current_top - delta_y).clamp(0.0, scrollbar.max_scroll_position);
-        node.top = Val::Px(new_top);
+            )
+            .observe(
+                move |
+                    _: Trigger<Pointer<Over>>,
+                    window: Single<Entity, With<Window>>,
+                    mut commands: Commands
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grab));
+                }
+            )
+            .observe(
+                move |
+                    _: Trigger<Pointer<Out>>,
+                    window: Single<Entity, With<Window>>,
+                    mut commands: Commands
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
+                }
+            );
     }
 }
 
-impl CloseButton{
-    pub fn default() -> Self{
-        CloseButton{
+impl CloseButton {
+    pub fn default() -> Self {
+        CloseButton {
             window_entity: Entity::PLACEHOLDER,
         }
     }
 
-    pub fn new(window_entity: Entity) -> Self{
+    pub fn new(window_entity: Entity) -> Self {
         let mut component = CloseButton::default();
         component.window_entity = window_entity;
         component
@@ -760,56 +708,70 @@ impl CloseButton{
 
     pub fn spawn(
         commands: &mut Commands,
-        ctx: &mut UiContext,
+        ctx: &UiContext,
         style: &UiWindowStyle,
         window_entity: Entity
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = CloseButton::new(window_entity);
-        commands.spawn(Node {
-            width: Val::Px(24.0),
-            height: Val::Px(24.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        })
-        .insert(component)
-        .with_children(|close| {
-            close.spawn_empty()
-            .insert(Text::new("\u{e5cd}"))
-            .insert(TextFont {
-                font_size: style.title_font_size + 2.0,
-                font: icon_font,
+        commands
+            .spawn(Node {
+                width: Val::Px(24.0),
+                height: Val::Px(24.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             })
-            .insert(TextColor(style.close_button_color));
-        }).id()
+            .insert(component)
+            .with_children(|close| {
+                close
+                    .spawn_empty()
+                    .insert(Text::new("\u{e5cd}"))
+                    .insert(TextFont {
+                        font_size: style.title_font_size + 2.0,
+                        font: icon_font,
+                        ..default()
+                    })
+                    .insert(TextColor(style.close_button_color));
+            })
+            .id()
     }
 
-    pub fn register_observers(entity: Entity, commands: &mut Commands){
-        commands.entity(entity)
-        .observe(
-            move |trigger: Trigger<Pointer<Click>>,
-                  mut commands: Commands,
-                  window: Single<Entity, With<Window>>,
-                  close_btn_query: Query<&CloseButton>| {
-                    if let Ok(close_btn) = close_btn_query.get(trigger.target()){
+    pub fn register_observers(entity: Entity, commands: &mut Commands) {
+        commands
+            .entity(entity)
+            .observe(
+                move |
+                    trigger: Trigger<Pointer<Click>>,
+                    mut commands: Commands,
+                    window: Single<Entity, With<Window>>,
+                    close_btn_query: Query<&CloseButton>
+                | {
+                    if let Ok(close_btn) = close_btn_query.get(trigger.target()) {
                         commands.entity(close_btn.window_entity).despawn();
                     }
                     commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-            },
-        )
-        .observe(
-            move |mut trigger: Trigger<Pointer<Over>>, mut commands: Commands, window: Single<Entity, With<Window>>| {
-                commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Pointer));
-                trigger.propagate(false);
-            },
-        )
-        .observe(
-            move |_: Trigger<Pointer<Out>>, mut commands: Commands, window: Single<Entity, With<Window>>| {
-                commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-            },
-        );
+                }
+            )
+            .observe(
+                move |
+                    mut trigger: Trigger<Pointer<Over>>,
+                    mut commands: Commands,
+                    window: Single<Entity, With<Window>>
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Pointer));
+                    trigger.propagate(false);
+                }
+            )
+            .observe(
+                move |
+                    _: Trigger<Pointer<Out>>,
+                    mut commands: Commands,
+                    window: Single<Entity, With<Window>>
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
+                }
+            );
     }
 }
 
@@ -828,9 +790,9 @@ impl ResizeCorner {
 
     pub fn spawn(
         commands: &mut Commands,
-        ctx: &mut UiContext,
+        ctx: &UiContext,
         style: &UiWindowStyle,
-        window_entity: Entity,
+        window_entity: Entity
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = ResizeCorner::new(window_entity);
@@ -864,154 +826,79 @@ impl ResizeCorner {
             })
             .id();
 
-            ResizeCorner::register_observers(entity, commands);
+        ResizeCorner::register_observers(entity, commands);
 
-            entity
-
-
+        entity
     }
 
     pub fn register_observers(entity: Entity, commands: &mut Commands) {
         commands
             .entity(entity)
             .observe(
-                move |mut trigger: Trigger<Pointer<Over>>, mut commands: Commands, window: Single<Entity, With<Window>>| {
+                move |
+                    mut trigger: Trigger<Pointer<Over>>,
+                    mut commands: Commands,
+                    window: Single<Entity, With<Window>>
+                | {
                     commands
                         .entity(*window)
                         .insert(CursorIcon::System(SystemCursorIcon::NwseResize));
                     trigger.propagate(false);
-                },
+                }
             )
             .observe(
-                move |_: Trigger<Pointer<Out>>, mut commands: Commands, window: Single<Entity, With<Window>>| {
-                    commands
-                        .entity(*window)
-                        .insert(CursorIcon::System(SystemCursorIcon::Default));
-                },
+                move |
+                    _: Trigger<Pointer<Out>>,
+                    mut commands: Commands,
+                    window: Single<Entity, With<Window>>
+                | {
+                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
+                }
             )
             .observe(
-                move |trigger: Trigger<Pointer<Drag>>,
-                      mut nodes: Query<&mut Node>,
-                      computed: Query<&ComputedNode>,
-                      corners: Query<&ResizeCorner>| {
+                move |
+                    trigger: Trigger<Pointer<Drag>>,
+                    mut nodes: Query<&mut Node>,
+                    computed: Query<&ComputedNode>,
+                    corners: Query<&ResizeCorner>
+                | {
                     let drag = trigger.event();
-        
+
                     if let Ok(resize_corner) = corners.get(trigger.target()) {
                         if let Ok(mut node) = nodes.get_mut(resize_corner.window_entity) {
                             if let Ok(layout) = computed.get(resize_corner.window_entity) {
                                 let new_width_px = (layout.size.x + drag.delta.x).max(50.0);
                                 match node.width {
-                                    Val::Px(_) => node.width = Val::Px(new_width_px),
+                                    Val::Px(_) => {
+                                        node.width = Val::Px(new_width_px);
+                                    }
                                     Val::Percent(pct) => {
                                         let total = layout.unrounded_size.x / (pct / 100.0);
                                         node.width = Val::Percent((new_width_px / total) * 100.0);
                                     }
-                                    _ => node.width = Val::Px(new_width_px),
+                                    _ => {
+                                        node.width = Val::Px(new_width_px);
+                                    }
                                 }
-        
+
                                 let new_height_px = (layout.size.y + drag.delta.y).max(50.0);
                                 match node.height {
-                                    Val::Px(_) => node.height = Val::Px(new_height_px),
+                                    Val::Px(_) => {
+                                        node.height = Val::Px(new_height_px);
+                                    }
                                     Val::Percent(pct) => {
                                         let total = layout.unrounded_size.y / (pct / 100.0);
                                         node.height = Val::Percent((new_height_px / total) * 100.0);
                                     }
-                                    _ => node.height = Val::Px(new_height_px),
+                                    _ => {
+                                        node.height = Val::Px(new_height_px);
+                                    }
                                 }
                             }
                         }
                     }
-                },
+                }
             );
-    }
-}
-
-fn update_scrollbar_height(
-    query: Query<(&Children, &ComputedNode), (With<ScrollContainer>, Changed<ComputedNode>)>,
-    computed_node_query: Query<&ComputedNode>,
-    scroll_content_query: Query<(), With<ScrollContent>>,
-    mut ev_writer: EventWriter<ScrollbarMovedEvent>,
-    mut scrollbar_query: Query<(&mut Node, &mut ScrollBar)>,
-) {
-    for (children, container_computed) in &query {
-        let container_height = container_computed.size.y;
-
-        let mut total_content_height = 0.0;
-        for child in children.iter() {
-            if let Ok(child_computed) = computed_node_query.get(child) {
-                if scroll_content_query.get(child).is_ok() {
-                    total_content_height += child_computed.size.y;
-                }
-            }
-        }
-
-        if total_content_height == 0.0 {
-            continue;
-        }
-
-        let scroll_ratio = (container_height / total_content_height).clamp(0.05, 1.0);
-        let scroll_percent = scroll_ratio * 100.0;
-
-        for child in children.iter() {
-            if let Ok((mut node, mut scrollbar)) = scrollbar_query.get_mut(child) {
-                let height_px = container_height * scroll_ratio;
-                node.height = if scroll_percent == 100.0 {
-                    Val::Px(0.0)
-                } else {
-                    Val::Percent(scroll_percent)
-                };
-
-                scrollbar.max_scroll_position = container_height - height_px;
-                scrollbar.scrollbar_height = height_px;
-                scrollbar.container_height = container_height;
-                scrollbar.content_height = total_content_height;
-
-                let current_top = match node.top {
-                    Val::Px(px) => px,
-                    _ => 0.0,
-                };
-                if current_top + height_px > container_height {
-                    node.top = Val::Px(container_height - height_px);
-                }
-
-                ev_writer.write(ScrollbarMovedEvent { scrollbar: child });
-            }
-        }
-    }
-}
-
-fn sync_scrollbar_to_content(
-    mut events: EventReader<ScrollbarMovedEvent>,
-    mut node_query: Query<&mut Node>,
-    scrollbar_query: Query<&ScrollBar>,
-) {
-    for event in events.read() {
-        if let Ok(scrollbar) = scrollbar_query.get(event.scrollbar) {
-            if let Ok(scrollbar_node) = node_query.get(event.scrollbar) {
-                let scroll_ratio = match scrollbar_node.top {
-                    Val::Px(px) => {
-                        if scrollbar.max_scroll_position != 0.0 {
-                            px / scrollbar.max_scroll_position
-                        } else {
-                            0.0
-                        }
-                    }
-                    _ => continue,
-                };
-
-                let overflow = (scrollbar.content_height - scrollbar.container_height).max(0.0);
-
-                let new_top = if overflow > 0.0 {
-                    -overflow * scroll_ratio
-                } else {
-                    0.0
-                };
-
-                if let Ok(mut content_node) = node_query.get_mut(scrollbar.scroll_content_entity) {
-                    content_node.top = Val::Px(new_top);
-                }
-            }
-        }
     }
 }
 
@@ -1022,10 +909,15 @@ fn detect_os_window_reentry(
     promoted_windows: Query<Entity, With<OsWindow>>,
     children_query: Query<&Children>,
     os_window_query: Query<&OsWindow>,
+    ui_window_query: Query<&UiWindow>,
     titlebar_query: Query<&Titlebar>,
     footer_query: Query<&Footer>,
-    mut node_query: Query<&mut Node>,
+    mut node_query: Query<&mut Node>
 ) {
+    if promoted_windows.is_empty() {
+        return;
+    }
+
     let Ok(primary_entity) = primary_window_query.single() else {
         return;
     };
@@ -1041,8 +933,8 @@ fn detect_os_window_reentry(
 
     let primary_left = primary_position.x;
     let primary_top = primary_position.y;
-    let primary_right = primary_left + primary_size.width as i32;
-    let primary_bottom = primary_top + primary_size.height as i32;
+    let primary_right = primary_left + (primary_size.width as i32);
+    let primary_bottom = primary_top + (primary_size.height as i32);
 
     for entity in promoted_windows.iter() {
         let Some(os_window) = winit_windows.get_window(entity) else {
@@ -1056,13 +948,14 @@ fn detect_os_window_reentry(
 
         let os_left = os_position.x;
         let os_top = os_position.y;
-        let os_right = os_left + os_size.width as i32;
-        let os_bottom = os_top + os_size.height as i32;
+        let os_right = os_left + (os_size.width as i32) / 2;
+        let os_bottom = os_top + (os_size.height as i32) / 2;
 
-        let within_bounds = os_left >= primary_left
-            && os_top >= primary_top
-            && os_right <= primary_right
-            && os_bottom <= primary_bottom;
+        let within_bounds =
+            os_left > primary_left &&
+            os_top > primary_top &&
+            os_right < primary_right &&
+            os_bottom < primary_bottom;
 
         if within_bounds {
             UiWindow::revert_to_ui_window(
@@ -1071,9 +964,11 @@ fn detect_os_window_reentry(
                 &winit_windows,
                 &children_query,
                 &os_window_query,
+                &ui_window_query,
                 &titlebar_query,
                 &footer_query,
                 &mut node_query,
+                primary_entity
             );
         }
     }

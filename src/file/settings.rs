@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{ Deserialize, Serialize };
 use std::fs;
 use std::path::PathBuf;
 use crate::states::StartupLatch;
@@ -38,17 +38,14 @@ pub fn load_or_create_settings(path: &PathBuf) -> Settings {
         return default;
     }
 
-    let content = fs::read_to_string(path)
+    let content = fs
+        ::read_to_string(path)
         .unwrap_or_else(|_| panic!("Failed to read settings file at '{}'", path.display()));
 
-    serde_yaml::from_str(&content)
-        .unwrap_or_else(|e| panic!("Failed to parse settings YAML: {e}"))
+    serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse settings YAML: {e}"))
 }
 
-fn change_window(
-    mut windows: Query<&mut Window>,
-    settings: &Settings,
-) {
+fn change_window(mut windows: Query<&mut Window>, settings: &Settings) {
     if let Ok(mut window) = windows.single_mut() {
         window.resolution.set(settings.window.width, settings.window.height);
     } else {
@@ -56,7 +53,12 @@ fn change_window(
     }
 }
 
-pub fn setup_settings(mut commands: Commands, windows: Query<&mut Window>, config: Res<AppConfig>, mut latch: ResMut<StartupLatch>,) {
+pub fn setup_settings(
+    mut commands: Commands,
+    windows: Query<&mut Window>,
+    config: Res<AppConfig>,
+    mut latch: ResMut<StartupLatch>
+) {
     let path = PathBuf::from(&config.saves.directory).join(&config.saves.settings_file);
 
     if let Some(parent) = path.parent() {

@@ -8,8 +8,9 @@ production = []
 
 [dependencies]
 bevy = { version = "0.16", features = ["serialize", "bevy_picking", "bevy_dev_tools", "bevy_winit"] }
-winit = { version = "0.30" }
+winit = { version = "0.30.11" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0" 
-serde_yaml = "0.9"
-dirs = "5.0"
+serde_yaml = "0.9.34-deprecated"
+dirs = "6.0"
+thiserror = "2.0"

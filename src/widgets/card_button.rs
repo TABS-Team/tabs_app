@@ -1,9 +1,6 @@
-use bevy::{
-    prelude::*
-};
-
-use crate::widgets::{UiContext};
-
+use bevy::prelude::*;
+use crate::widgets::{ UiContext, UiButton };
+use crate::states::AppState;
 
 #[derive(Component, Clone)]
 pub struct Card {
@@ -20,6 +17,7 @@ pub struct CardStyle {
     pub border_radius: f32,
     pub text_color: Color,
     pub font_size: f32,
+    pub margin: UiRect,
 }
 
 impl Default for CardStyle {
@@ -30,6 +28,12 @@ impl Default for CardStyle {
             border_radius: 12.0,
             text_color: Color::WHITE,
             font_size: 16.0,
+            margin: UiRect {
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+            },
         }
     }
 }
@@ -42,6 +46,15 @@ pub struct CardBuilder {
 }
 
 impl CardBuilder {
+    pub fn new(title: impl Into<String>, subtitle: impl Into<String>) -> Self {
+        CardBuilder {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            image: None,
+            style: CardStyle::default(),
+        }
+    }
+
     pub fn image(mut self, image: Handle<Image>) -> Self {
         self.image = Some(image);
         self
@@ -52,16 +65,69 @@ impl CardBuilder {
         self
     }
 
-    pub fn build(self) -> Card {
-        Card {
-            title: self.title,
-            subtitle: self.subtitle,
-            image: self.image,
-            style: self.style,
-        }
+    pub fn spawn<F>(
+        self,
+        commands: &mut ChildSpawnerCommands,
+        _ctx: &UiContext,
+        children: F
+    ) -> Entity
+        where F: FnOnce(&mut ChildSpawnerCommands)
+    {
+        let card = Card {
+            title: self.title.clone(),
+            subtitle: self.subtitle.clone(),
+            image: self.image.clone(),
+            style: self.style.clone(),
+        };
+
+        let mut cmd = commands.spawn((
+            Node {
+                width: Val::Px(230.0),
+                height: Val::Auto,
+                margin: card.style.margin,
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                ..Default::default()
+            },
+            BackgroundColor(card.style.background_color),
+            BorderColor(card.style.border_color),
+            BorderRadius::new(
+                Val::Px(card.style.border_radius),
+                Val::Px(card.style.border_radius),
+                Val::Px(card.style.border_radius),
+                Val::Px(card.style.border_radius)
+            ),
+            card.clone(),
+            UiButton,
+        ));
+
+        cmd.with_children(|parent| {
+            if let Some(img) = &card.image {
+                parent
+                    .spawn((ImageNode::new(img.clone()),))
+                    .insert(
+                        BorderRadius::new(
+                            Val::Px(card.style.border_radius),
+                            Val::Px(card.style.border_radius),
+                            Val::Px(0.0),
+                            Val::Px(0.0)
+                        )
+                    );
+            }
+            parent.spawn((
+                Text::new(format!("{}\n{}", card.title, card.subtitle)),
+                TextFont {
+                    font_size: card.style.font_size,
+                    ..Default::default()
+                },
+                TextColor(card.style.text_color),
+            ));
+            children(parent);
+        });
+
+        cmd.id()
     }
 }
-
 
 impl Card {
     pub fn builder(title: impl Into<String>, subtitle: impl Into<String>) -> CardBuilder {
@@ -71,66 +137,5 @@ impl Card {
             image: None,
             style: CardStyle::default(),
         }
-    }
-
-    pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
-        self,
-        commands: &mut Commands,
-        ctx: &mut UiContext,
-        left_margin: Val,
-        top_margin: Val,
-        children: F,
-    ) -> Entity {
-        let card_components = (
-            Node {
-                width: Val::Px(230.0),
-                height: Val::Auto,
-                margin: UiRect {
-                    left: left_margin,
-                    top: top_margin,
-                    ..default()
-                },
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(self.style.background_color),
-            BorderColor(self.style.border_color),
-            BorderRadius::all(Val::Px(self.style.border_radius)),
-            self.clone(),
-        );
-
-        commands.spawn(card_components)
-        .with_children(|card| {
-            if let Some(image) = &self.image {
-                card.spawn(ImageNode {
-                    image: image.clone(),
-                    ..default()
-                })
-                .insert(BorderRadius::px(
-                    self.style.border_radius,
-                    self.style.border_radius,
-                    0.0,
-                    0.0,
-                ));
-            }
-            let text = format!("{}\n{}", self.title, self.subtitle);
-            card.spawn((
-                Text::new(text),
-                TextFont {
-                    font_size: self.style.font_size,
-                    ..default()
-                },
-                TextColor(self.style.text_color),
-                TextLayout::new(JustifyText::Left, LineBreak::WordBoundary),
-                Node {
-                    width: Val::Auto,
-                    height: Val::Auto,
-                    ..default()
-                },
-            ));
-            children(card);
-        })
-        .id()
     }
 }

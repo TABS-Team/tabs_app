@@ -3,7 +3,6 @@ use bevy::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 
-
 #[derive(Debug, Deserialize, Resource)]
 pub struct AppConfig {
     pub window: WindowConfig,
@@ -43,11 +42,11 @@ impl Plugin for ConfigPlugin {
 }
 
 fn load_config(path: &str) -> AppConfig {
-    let content = fs::read_to_string(path)
+    let content = fs
+        ::read_to_string(path)
         .unwrap_or_else(|_| panic!("Failed to read config file at: {path}"));
 
-    serde_yaml::from_str(&content)
-        .unwrap_or_else(|e| panic!("Failed to parse YAML: {e}"))
+    serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse YAML: {e}"))
 }
 
 fn get_save_directory(save_dir: &String) -> PathBuf {
