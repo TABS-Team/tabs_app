@@ -1,14 +1,14 @@
 use bevy::{
+    ecs::observer::ObservedBy,
     prelude::*,
-    ui::{ BackgroundColor, BorderColor },
-    ecs::{ observer::ObservedBy },
-    winit::{ cursor::{ CursorIcon }, WinitWindows },
-    window::{ SystemCursorIcon, PrimaryWindow, WindowRef },
     render::camera::RenderTarget,
+    ui::{BackgroundColor, BorderColor},
+    window::{PrimaryWindow, SystemCursorIcon, WindowRef},
+    winit::{cursor::CursorIcon, WinitWindows},
 };
-use winit::dpi::{ PhysicalPosition, PhysicalSize };
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 
-use crate::widgets::{ UiLayer, UiLayerStack, UiContext };
+use crate::widgets::{UiContext, UiLayer, UiLayerStack};
 
 const SPAWNMARGIN: i32 = 10;
 
@@ -16,7 +16,8 @@ pub struct UiWindowPlugin;
 
 impl Plugin for UiWindowPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<PromoteToOsWindowEvent>().add_systems(Update, detect_os_window_reentry);
+        app.add_event::<PromoteToOsWindowEvent>()
+            .add_systems(Update, detect_os_window_reentry);
     }
 }
 
@@ -209,7 +210,11 @@ impl UiWindow {
     }
 
     pub fn bundle(&self, left: Val, top: Val) -> UiWindowBundle {
-        let pos_type = if self.options.draggable { PositionType::Absolute } else { self.position };
+        let pos_type = if self.options.draggable {
+            PositionType::Absolute
+        } else {
+            self.position
+        };
         UiWindowBundle {
             node: Node {
                 width: self.width,
@@ -236,7 +241,7 @@ impl UiWindow {
         layer_stack: &mut UiLayerStack,
         left: Val,
         top: Val,
-        children: F
+        children: F,
     ) -> Entity {
         let window = commands
             .spawn(self.bundle(left, top))
@@ -253,7 +258,7 @@ impl UiWindow {
                 &self.title,
                 &self.style,
                 window,
-                self.options.closeable
+                self.options.closeable,
             );
             modules.push(tb);
             if self.options.draggable {
@@ -302,20 +307,16 @@ impl UiWindow {
     }
 
     fn register_observers(entity: Entity, commands: &mut Commands) {
-        commands
-            .entity(entity)
-            .observe(
-                |
-                    trigger: Trigger<Pointer<Pressed>>,
-                    mut commands: Commands,
-                    mut stack: ResMut<UiLayerStack>,
-                    layers: Query<&WindowLayer>
-                | {
-                    if let Ok(WindowLayer(layer)) = layers.get(trigger.target()) {
-                        stack.bring_to_front(*layer, trigger.target(), &mut commands);
-                    }
+        commands.entity(entity).observe(
+            |trigger: Trigger<Pointer<Pressed>>,
+             mut commands: Commands,
+             mut stack: ResMut<UiLayerStack>,
+             layers: Query<&WindowLayer>| {
+                if let Ok(WindowLayer(layer)) = layers.get(trigger.target()) {
+                    stack.bring_to_front(*layer, trigger.target(), &mut commands);
                 }
-            );
+            },
+        );
     }
 
     fn convert_to_os_window(
@@ -328,7 +329,7 @@ impl UiWindow {
         computed_node_query: &Query<&ComputedNode>,
         node_query: &mut Query<&mut Node>,
         winit_windows: &NonSend<WinitWindows>,
-        primary_window_entity: Entity
+        primary_window_entity: Entity,
     ) {
         let Ok(children) = children_query.get(window_entity) else {
             return;
@@ -336,7 +337,8 @@ impl UiWindow {
 
         let Some(content_container_entity) = children
             .iter()
-            .find(|child| content_container_query.get(*child).is_ok()) else {
+            .find(|child| content_container_query.get(*child).is_ok())
+        else {
             return;
         };
 
@@ -344,10 +346,9 @@ impl UiWindow {
             return;
         };
 
-        if
-            let Some(titlebar_entity) = children
-                .iter()
-                .find(|child| titlebar_query.get(*child).is_ok())
+        if let Some(titlebar_entity) = children
+            .iter()
+            .find(|child| titlebar_query.get(*child).is_ok())
         {
             commands.entity(titlebar_entity).remove::<ObservedBy>();
             if let Ok(mut titlebar_node) = node_query.get_mut(titlebar_entity) {
@@ -355,7 +356,10 @@ impl UiWindow {
             }
         }
 
-        if let Some(footer_entity) = children.iter().find(|child| footer_query.get(*child).is_ok()) {
+        if let Some(footer_entity) = children
+            .iter()
+            .find(|child| footer_query.get(*child).is_ok())
+        {
             if let Ok(mut footer_node) = node_query.get_mut(footer_entity) {
                 footer_node.display = Display::None;
             }
@@ -370,7 +374,9 @@ impl UiWindow {
         let Some(primary_window) = winit_windows.get_window(primary_window_entity) else {
             return;
         };
-        let primary_position = primary_window.outer_position().unwrap();
+        let primary_position = primary_window
+            .outer_position()
+            .unwrap_or(PhysicalPosition { x: 0, y: 0 });
 
         let Ok(node) = node_query.get(window_entity) else {
             return;
@@ -379,7 +385,10 @@ impl UiWindow {
             return;
         };
 
-        let PhysicalSize { width: screen_w, height: screen_h } = primary_window.inner_size();
+        let PhysicalSize {
+            width: screen_w,
+            height: screen_h,
+        } = primary_window.inner_size();
         let screen_w = screen_w as f32;
         let screen_h = screen_h as f32;
 
@@ -427,8 +436,12 @@ impl UiWindow {
             window_node.left = Val::Px(0.0);
         }
         commands.entity(window_entity).remove::<UiTargetCamera>();
-        commands.entity(window_entity).insert(UiTargetCamera(camera_entity));
-        commands.entity(new_window_entity).insert(OsWindow::new(camera_entity, window_entity));
+        commands
+            .entity(window_entity)
+            .insert(UiTargetCamera(camera_entity));
+        commands
+            .entity(new_window_entity)
+            .insert(OsWindow::new(camera_entity, window_entity));
     }
 
     fn revert_to_ui_window(
@@ -441,7 +454,7 @@ impl UiWindow {
         titlebar_query: &Query<&Titlebar>,
         footer_query: &Query<&Footer>,
         node_query: &mut Query<&mut Node>,
-        primary_window_entity: Entity
+        primary_window_entity: Entity,
     ) {
         let Ok(os_window) = os_window_query.get(os_window_entity) else {
             return;
@@ -451,10 +464,9 @@ impl UiWindow {
             return;
         };
 
-        if
-            let Some(titlebar_entity) = children
-                .iter()
-                .find(|child| titlebar_query.get(*child).is_ok())
+        if let Some(titlebar_entity) = children
+            .iter()
+            .find(|child| titlebar_query.get(*child).is_ok())
         {
             Titlebar::register_observers(titlebar_entity, commands);
             if let Ok(mut titlebar_node) = node_query.get_mut(titlebar_entity) {
@@ -462,7 +474,10 @@ impl UiWindow {
             }
         }
 
-        if let Some(footer_entity) = children.iter().find(|child| footer_query.get(*child).is_ok()) {
+        if let Some(footer_entity) = children
+            .iter()
+            .find(|child| footer_query.get(*child).is_ok())
+        {
             if let Ok(mut footer_node) = node_query.get_mut(footer_entity) {
                 footer_node.display = Display::Flex;
             }
@@ -519,7 +534,9 @@ impl UiWindow {
         commands.entity(window_entity).remove::<UiTargetCamera>();
         if let Ok(ui_window) = ui_window_query.get(window_entity) {
             if let Some(camera_entity) = ui_window.options.camera {
-                commands.entity(window_entity).insert(UiTargetCamera(camera_entity));
+                commands
+                    .entity(window_entity)
+                    .insert(UiTargetCamera(camera_entity));
             }
         }
         commands.entity(os_window.os_window_camera_entity).despawn();
@@ -541,9 +558,12 @@ impl Titlebar {
         label: &String,
         style: &UiWindowStyle,
         window_entity: Entity,
-        closeable: bool
+        closeable: bool,
     ) -> Entity {
-        let component = Titlebar { window_entity, title: label.clone() };
+        let component = Titlebar {
+            window_entity,
+            title: label.clone(),
+        };
 
         let entity = commands
             .spawn(Node {
@@ -586,19 +606,17 @@ impl Titlebar {
         commands
             .entity(entity)
             .observe(
-                move |
-                    trigger: Trigger<Pointer<Drag>>,
-                    title_bars: Query<&Titlebar>,
-                    mut nodes: Query<&mut Node>,
-                    mut commands: Commands,
-                    children_query: Query<&Children>,
-                    content_container_query: Query<&Content>,
-                    titlebar_query: Query<&Titlebar>,
-                    footer_query: Query<&Footer>,
-                    computed_node_query: Query<&ComputedNode>,
-                    winit_windows: NonSend<WinitWindows>,
-                    primary_window: Query<Entity, With<PrimaryWindow>>
-                | {
+                move |trigger: Trigger<Pointer<Drag>>,
+                      title_bars: Query<&Titlebar>,
+                      mut nodes: Query<&mut Node>,
+                      mut commands: Commands,
+                      children_query: Query<&Children>,
+                      content_container_query: Query<&Content>,
+                      titlebar_query: Query<&Titlebar>,
+                      footer_query: Query<&Footer>,
+                      computed_node_query: Query<&ComputedNode>,
+                      winit_windows: NonSend<WinitWindows>,
+                      primary_window: Query<Entity, With<PrimaryWindow>>| {
                     let drag = trigger.event();
                     let Ok(title_bar) = title_bars.get(trigger.target()) else {
                         return;
@@ -629,11 +647,10 @@ impl Titlebar {
                             if let (Val::Px(left), Val::Px(top)) = (node.left, node.top) {
                                 let center_x = left + node_w * 0.5;
                                 let center_y = top + node_h * 0.5;
-                                let half_out =
-                                    center_x < 0.0 ||
-                                    center_y < 0.0 ||
-                                    center_x > screen_w ||
-                                    center_y > screen_h;
+                                let half_out = center_x < 0.0
+                                    || center_y < 0.0
+                                    || center_x > screen_w
+                                    || center_y > screen_h;
 
                                 if half_out {
                                     UiWindow::convert_to_os_window(
@@ -646,49 +663,49 @@ impl Titlebar {
                                         &computed_node_query,
                                         &mut nodes,
                                         &winit_windows,
-                                        primary_window_entity
+                                        primary_window_entity,
                                     );
                                 }
                             }
                         }
                     }
-                }
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<DragEnd>>,
-                    window: Single<Entity, With<Window>>,
-                    mut commands: Commands
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grab));
-                }
+                move |_: Trigger<Pointer<DragEnd>>,
+                      window: Single<Entity, With<Window>>,
+                      mut commands: Commands| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Grab));
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<DragStart>>,
-                    window: Single<Entity, With<Window>>,
-                    mut commands: Commands
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grabbing));
-                }
+                move |_: Trigger<Pointer<DragStart>>,
+                      window: Single<Entity, With<Window>>,
+                      mut commands: Commands| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Grabbing));
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<Over>>,
-                    window: Single<Entity, With<Window>>,
-                    mut commands: Commands
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Grab));
-                }
+                move |_: Trigger<Pointer<Over>>,
+                      window: Single<Entity, With<Window>>,
+                      mut commands: Commands| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Grab));
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<Out>>,
-                    window: Single<Entity, With<Window>>,
-                    mut commands: Commands
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-                }
+                move |_: Trigger<Pointer<Out>>,
+                      window: Single<Entity, With<Window>>,
+                      mut commands: Commands| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Default));
+                },
             );
     }
 }
@@ -710,7 +727,7 @@ impl CloseButton {
         commands: &mut Commands,
         ctx: &UiContext,
         style: &UiWindowStyle,
-        window_entity: Entity
+        window_entity: Entity,
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = CloseButton::new(window_entity);
@@ -741,36 +758,36 @@ impl CloseButton {
         commands
             .entity(entity)
             .observe(
-                move |
-                    trigger: Trigger<Pointer<Click>>,
-                    mut commands: Commands,
-                    window: Single<Entity, With<Window>>,
-                    close_btn_query: Query<&CloseButton>
-                | {
+                move |trigger: Trigger<Pointer<Click>>,
+                      mut commands: Commands,
+                      window: Single<Entity, With<Window>>,
+                      close_btn_query: Query<&CloseButton>| {
                     if let Ok(close_btn) = close_btn_query.get(trigger.target()) {
                         commands.entity(close_btn.window_entity).despawn();
                     }
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-                }
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Default));
+                },
             )
             .observe(
-                move |
-                    mut trigger: Trigger<Pointer<Over>>,
-                    mut commands: Commands,
-                    window: Single<Entity, With<Window>>
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Pointer));
+                move |mut trigger: Trigger<Pointer<Over>>,
+                      mut commands: Commands,
+                      window: Single<Entity, With<Window>>| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Pointer));
                     trigger.propagate(false);
-                }
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<Out>>,
-                    mut commands: Commands,
-                    window: Single<Entity, With<Window>>
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-                }
+                move |_: Trigger<Pointer<Out>>,
+                      mut commands: Commands,
+                      window: Single<Entity, With<Window>>| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Default));
+                },
             );
     }
 }
@@ -783,16 +800,14 @@ impl ResizeCorner {
     }
 
     pub fn new(window_entity: Entity) -> Self {
-        ResizeCorner {
-            window_entity,
-        }
+        ResizeCorner { window_entity }
     }
 
     pub fn spawn(
         commands: &mut Commands,
         ctx: &UiContext,
         style: &UiWindowStyle,
-        window_entity: Entity
+        window_entity: Entity,
     ) -> Entity {
         let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
         let component = ResizeCorner::new(window_entity);
@@ -835,33 +850,29 @@ impl ResizeCorner {
         commands
             .entity(entity)
             .observe(
-                move |
-                    mut trigger: Trigger<Pointer<Over>>,
-                    mut commands: Commands,
-                    window: Single<Entity, With<Window>>
-                | {
+                move |mut trigger: Trigger<Pointer<Over>>,
+                      mut commands: Commands,
+                      window: Single<Entity, With<Window>>| {
                     commands
                         .entity(*window)
                         .insert(CursorIcon::System(SystemCursorIcon::NwseResize));
                     trigger.propagate(false);
-                }
+                },
             )
             .observe(
-                move |
-                    _: Trigger<Pointer<Out>>,
-                    mut commands: Commands,
-                    window: Single<Entity, With<Window>>
-                | {
-                    commands.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-                }
+                move |_: Trigger<Pointer<Out>>,
+                      mut commands: Commands,
+                      window: Single<Entity, With<Window>>| {
+                    commands
+                        .entity(*window)
+                        .insert(CursorIcon::System(SystemCursorIcon::Default));
+                },
             )
             .observe(
-                move |
-                    trigger: Trigger<Pointer<Drag>>,
-                    mut nodes: Query<&mut Node>,
-                    computed: Query<&ComputedNode>,
-                    corners: Query<&ResizeCorner>
-                | {
+                move |trigger: Trigger<Pointer<Drag>>,
+                      mut nodes: Query<&mut Node>,
+                      computed: Query<&ComputedNode>,
+                      corners: Query<&ResizeCorner>| {
                     let drag = trigger.event();
 
                     if let Ok(resize_corner) = corners.get(trigger.target()) {
@@ -897,7 +908,7 @@ impl ResizeCorner {
                             }
                         }
                     }
-                }
+                },
             );
     }
 }
@@ -912,7 +923,7 @@ fn detect_os_window_reentry(
     ui_window_query: Query<&UiWindow>,
     titlebar_query: Query<&Titlebar>,
     footer_query: Query<&Footer>,
-    mut node_query: Query<&mut Node>
+    mut node_query: Query<&mut Node>,
 ) {
     if promoted_windows.is_empty() {
         return;
@@ -951,11 +962,10 @@ fn detect_os_window_reentry(
         let os_right = os_left + (os_size.width as i32) / 2;
         let os_bottom = os_top + (os_size.height as i32) / 2;
 
-        let within_bounds =
-            os_left > primary_left &&
-            os_top > primary_top &&
-            os_right < primary_right &&
-            os_bottom < primary_bottom;
+        let within_bounds = os_left > primary_left
+            && os_top > primary_top
+            && os_right < primary_right
+            && os_bottom < primary_bottom;
 
         if within_bounds {
             UiWindow::revert_to_ui_window(
@@ -968,7 +978,7 @@ fn detect_os_window_reentry(
                 &titlebar_query,
                 &footer_query,
                 &mut node_query,
-                primary_entity
+                primary_entity,
             );
         }
     }
