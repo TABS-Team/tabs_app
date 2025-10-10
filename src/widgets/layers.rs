@@ -1,11 +1,11 @@
-use std::collections::{ HashMap, VecDeque };
 use bevy::prelude::*;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UiLayer {
     Overlay, // Game overlays, in a traditional game you would put a healthbar here
-    Menus, // Floating windows
-    Debug, // Debug windows
+    Menus,   // Floating windows
+    Debug,   // Debug windows
 }
 
 #[derive(Resource, Default)]
@@ -31,7 +31,9 @@ impl UiLayerStack {
         if let Some(queue) = self.stacks.get(&layer) {
             let base = layer.base_z();
             for (i, &entity) in queue.iter().enumerate() {
-                commands.entity(entity).insert(GlobalZIndex(base + (i as i32) + 1));
+                commands
+                    .entity(entity)
+                    .insert(GlobalZIndex(base + (i as i32) + 1));
             }
         }
     }

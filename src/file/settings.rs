@@ -1,9 +1,9 @@
+use crate::file::config::AppConfig;
+use crate::states::StartupLatch;
 use bevy::prelude::*;
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use crate::states::StartupLatch;
-use crate::file::config::AppConfig;
 
 #[derive(Resource, Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -31,15 +31,17 @@ impl Default for Settings {
 
 pub fn load_or_create_settings(path: &PathBuf) -> Settings {
     if !path.exists() {
-        warn!("Settings file not found at '{}', creating default...", path.display());
+        warn!(
+            "Settings file not found at '{}', creating default...",
+            path.display()
+        );
         let default = Settings::default();
         let yaml = serde_yaml::to_string(&default).expect("Failed to serialize default settings");
         fs::write(path, yaml).expect("Failed to write default settings file");
         return default;
     }
 
-    let content = fs
-        ::read_to_string(path)
+    let content = fs::read_to_string(path)
         .unwrap_or_else(|_| panic!("Failed to read settings file at '{}'", path.display()));
 
     serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse settings YAML: {e}"))
@@ -47,7 +49,9 @@ pub fn load_or_create_settings(path: &PathBuf) -> Settings {
 
 fn change_window(mut windows: Query<&mut Window>, settings: &Settings) {
     if let Ok(mut window) = windows.single_mut() {
-        window.resolution.set(settings.window.width, settings.window.height);
+        window
+            .resolution
+            .set(settings.window.width, settings.window.height);
     } else {
         warn!("Primary window not available to apply settings");
     }
@@ -57,7 +61,7 @@ pub fn setup_settings(
     mut commands: Commands,
     windows: Query<&mut Window>,
     config: Res<AppConfig>,
-    mut latch: ResMut<StartupLatch>
+    mut latch: ResMut<StartupLatch>,
 ) {
     let path = PathBuf::from(&config.saves.directory).join(&config.saves.settings_file);
 

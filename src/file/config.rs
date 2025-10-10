@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use bevy::prelude::*;
+use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
 
@@ -42,8 +42,7 @@ impl Plugin for ConfigPlugin {
 }
 
 fn load_config(path: &str) -> AppConfig {
-    let content = fs
-        ::read_to_string(path)
+    let content = fs::read_to_string(path)
         .unwrap_or_else(|_| panic!("Failed to read config file at: {path}"));
 
     serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse YAML: {e}"))

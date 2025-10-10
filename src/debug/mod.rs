@@ -1,4 +1,4 @@
-use bevy::{ prelude::*, diagnostic::{ FrameTimeDiagnosticsPlugin } };
+use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*};
 
 use crate::states::AppState;
 
@@ -32,5 +32,7 @@ fn setup_debug_camera(mut commands: Commands) {
             },
         ))
         .id();
-    commands.insert_resource(DebugCamera { entity: camera_entity });
+    commands.insert_resource(DebugCamera {
+        entity: camera_entity,
+    });
 }

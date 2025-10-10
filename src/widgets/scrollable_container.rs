@@ -1,5 +1,8 @@
-use bevy::{ prelude::*, ui::{ BackgroundColor, Overflow } };
 use crate::widgets::UiContext;
+use bevy::{
+    prelude::*,
+    ui::{BackgroundColor, Overflow},
+};
 
 const LINE_HEIGHT: f32 = 20.0;
 
@@ -49,7 +52,9 @@ pub struct ScrollContainerBuilder {
 
 impl ScrollContainerBuilder {
     pub fn new() -> Self {
-        ScrollContainerBuilder { style: ScrollContainerStyle::default() }
+        ScrollContainerBuilder {
+            style: ScrollContainerStyle::default(),
+        }
     }
     pub fn style(mut self, style: ScrollContainerStyle) -> Self {
         self.style = style;
@@ -83,16 +88,21 @@ pub struct ScrollContent;
 
 impl ScrollContainer {
     pub fn builder() -> ScrollContainerBuilder {
-        ScrollContainerBuilder { style: ScrollContainerStyle::default() }
+        ScrollContainerBuilder {
+            style: ScrollContainerStyle::default(),
+        }
     }
     pub fn new(scrollbar_entity: Entity, style: &ScrollContainerStyle) -> Self {
-        ScrollContainer { scrollbar_entity, style: style.clone() }
+        ScrollContainer {
+            scrollbar_entity,
+            style: style.clone(),
+        }
     }
     pub fn spawn<F: FnOnce(&mut ChildSpawnerCommands)>(
         &mut self,
         commands: &mut ChildSpawnerCommands,
         _ui_context: &UiContext,
-        children: F
+        children: F,
     ) -> Entity {
         let content_node = commands
             .spawn(Node {
@@ -139,37 +149,30 @@ impl ScrollContainer {
     }
 
     fn register_scrollwheel_observers(container_entity: Entity, commands: &mut Commands) {
-        commands
-            .entity(container_entity)
-            .observe(
-                move |
-                    mut trigger: Trigger<Pointer<Scroll>>,
-                    scroll_container_query: Query<&ScrollContainer>,
-                    mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
-                    mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>
-                | {
-                    let scroll_delta = trigger.event().y * LINE_HEIGHT;
-                    if let Ok(scroll_container) = scroll_container_query.get(trigger.target()) {
-                        if
-                            let Ok((thumb_node, scrollbar)) = scrollbar_query.get_mut(
-                                scroll_container.scrollbar_entity
-                            )
+        commands.entity(container_entity).observe(
+            move |mut trigger: Trigger<Pointer<Scroll>>,
+                  scroll_container_query: Query<&ScrollContainer>,
+                  mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
+                  mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>| {
+                let scroll_delta = trigger.event().y * LINE_HEIGHT;
+                if let Ok(scroll_container) = scroll_container_query.get(trigger.target()) {
+                    if let Ok((thumb_node, scrollbar)) =
+                        scrollbar_query.get_mut(scroll_container.scrollbar_entity)
+                    {
+                        if matches!(thumb_node.height, Val::Px(h) if h <= 0.0)
+                            || matches!(thumb_node.height, Val::Percent(p) if p <= 0.0)
                         {
-                            if
-                                matches!(thumb_node.height, Val::Px(h) if h <= 0.0) ||
-                                matches!(thumb_node.height, Val::Percent(p) if p <= 0.0)
-                            {
-                                return;
-                            }
-                            ScrollBar::move_thumb(thumb_node, scrollbar, scroll_delta);
-                            scrollbar_event_writer.write(ScrollbarMovedEvent {
-                                scrollbar_entity: scroll_container.scrollbar_entity,
-                            });
-                            trigger.propagate(false);
+                            return;
                         }
+                        ScrollBar::move_thumb(thumb_node, scrollbar, scroll_delta);
+                        scrollbar_event_writer.write(ScrollbarMovedEvent {
+                            scrollbar_entity: scroll_container.scrollbar_entity,
+                        });
+                        trigger.propagate(false);
                     }
                 }
-            );
+            },
+        );
     }
 }
 
@@ -184,28 +187,28 @@ impl ScrollBar {
         }
     }
     pub fn register_scrollbar_drag_observers(scrollbar_entity: Entity, commands: &mut Commands) {
-        commands
-            .entity(scrollbar_entity)
-            .observe(
-                move |
-                    mut trigger: Trigger<Pointer<Drag>>,
-                    mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
-                    mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>
-                | {
-                    let drag_delta = trigger.event().delta.y;
-                    let thumb_entity = trigger.target();
-                    if let Ok((thumb_node, scrollbar)) = scrollbar_query.get_mut(thumb_entity) {
-                        ScrollBar::move_thumb(thumb_node, scrollbar, -drag_delta);
-                        scrollbar_event_writer.write(ScrollbarMovedEvent {
-                            scrollbar_entity: thumb_entity,
-                        });
-                        trigger.propagate(false);
-                    }
+        commands.entity(scrollbar_entity).observe(
+            move |mut trigger: Trigger<Pointer<Drag>>,
+                  mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
+                  mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>| {
+                let drag_delta = trigger.event().delta.y;
+                let thumb_entity = trigger.target();
+                if let Ok((thumb_node, scrollbar)) = scrollbar_query.get_mut(thumb_entity) {
+                    ScrollBar::move_thumb(thumb_node, scrollbar, -drag_delta);
+                    scrollbar_event_writer.write(ScrollbarMovedEvent {
+                        scrollbar_entity: thumb_entity,
+                    });
+                    trigger.propagate(false);
                 }
-            );
+            },
+        );
     }
     fn move_thumb(mut thumb_node: Mut<Node>, scrollbar: &ScrollBar, delta_y: f32) {
-        let current_top = if let Val::Px(pos) = thumb_node.top { pos } else { 0.0 };
+        let current_top = if let Val::Px(pos) = thumb_node.top {
+            pos
+        } else {
+            0.0
+        };
         let clamped_top = (current_top - delta_y).clamp(0.0, scrollbar.max_scroll_offset);
         thumb_node.top = Val::Px(clamped_top);
     }
@@ -216,7 +219,7 @@ pub fn update_scrollbar_height(
     computed_node_query: Query<&ComputedNode>,
     content_query: Query<(), With<ScrollContent>>,
     mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>,
-    mut scrollbar_query: Query<(&mut Node, &mut ScrollBar)>
+    mut scrollbar_query: Query<(&mut Node, &mut ScrollBar)>,
 ) {
     for (child_entities, container_computed) in &query {
         let viewport_height = container_computed.size.y;
@@ -245,11 +248,17 @@ pub fn update_scrollbar_height(
                 scrollbar.scrollbar_height = thumb_height;
                 scrollbar.viewport_height = viewport_height;
                 scrollbar.total_content_height = total_height;
-                let current_top = if let Val::Px(t) = thumb_node.top { t } else { 0.0 };
+                let current_top = if let Val::Px(t) = thumb_node.top {
+                    t
+                } else {
+                    0.0
+                };
                 if current_top + thumb_height > viewport_height {
                     thumb_node.top = Val::Px(viewport_height - thumb_height);
                 }
-                scrollbar_event_writer.write(ScrollbarMovedEvent { scrollbar_entity: child });
+                scrollbar_event_writer.write(ScrollbarMovedEvent {
+                    scrollbar_entity: child,
+                });
             }
         }
     }
@@ -258,7 +267,7 @@ pub fn update_scrollbar_height(
 pub fn sync_scrollbar_to_content(
     mut scrollbar_move_events: EventReader<ScrollbarMovedEvent>,
     mut node_query: Query<&mut Node>,
-    scrollbar_query: Query<&ScrollBar>
+    scrollbar_query: Query<&ScrollBar>,
 ) {
     for event in scrollbar_move_events.read() {
         if let Ok(scrollbar) = scrollbar_query.get(event.scrollbar_entity) {
@@ -272,9 +281,8 @@ pub fn sync_scrollbar_to_content(
                 } else {
                     0.0
                 };
-                let max_overflow = (scrollbar.total_content_height - scrollbar.viewport_height).max(
-                    0.0
-                );
+                let max_overflow =
+                    (scrollbar.total_content_height - scrollbar.viewport_height).max(0.0);
                 let content_offset = if max_overflow > 0.0 {
                     -max_overflow * scroll_ratio
                 } else {

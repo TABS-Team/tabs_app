@@ -1,6 +1,6 @@
-use bevy::prelude::*;
-use crate::widgets::{ UiContext, UiButton };
 use crate::states::AppState;
+use crate::widgets::{UiButton, UiContext};
+use bevy::prelude::*;
 
 #[derive(Component, Clone)]
 pub struct Card {
@@ -69,9 +69,10 @@ impl CardBuilder {
         self,
         commands: &mut ChildSpawnerCommands,
         _ctx: &UiContext,
-        children: F
+        children: F,
     ) -> Entity
-        where F: FnOnce(&mut ChildSpawnerCommands)
+    where
+        F: FnOnce(&mut ChildSpawnerCommands),
     {
         let card = Card {
             title: self.title.clone(),
@@ -95,7 +96,7 @@ impl CardBuilder {
                 Val::Px(card.style.border_radius),
                 Val::Px(card.style.border_radius),
                 Val::Px(card.style.border_radius),
-                Val::Px(card.style.border_radius)
+                Val::Px(card.style.border_radius),
             ),
             card.clone(),
             UiButton,
@@ -105,14 +106,12 @@ impl CardBuilder {
             if let Some(img) = &card.image {
                 parent
                     .spawn((ImageNode::new(img.clone()),))
-                    .insert(
-                        BorderRadius::new(
-                            Val::Px(card.style.border_radius),
-                            Val::Px(card.style.border_radius),
-                            Val::Px(0.0),
-                            Val::Px(0.0)
-                        )
-                    );
+                    .insert(BorderRadius::new(
+                        Val::Px(card.style.border_radius),
+                        Val::Px(card.style.border_radius),
+                        Val::Px(0.0),
+                        Val::Px(0.0),
+                    ));
             }
             parent.spawn((
                 Text::new(format!("{}\n{}", card.title, card.subtitle)),

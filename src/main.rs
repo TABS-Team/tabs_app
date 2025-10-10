@@ -1,22 +1,23 @@
 use bevy::{
     prelude::*,
-    window::{ WindowPlugin, ExitCondition, PrimaryWindow, Window, WindowResolution },
-    winit::{ WinitWindows },
+    window::{ExitCondition, PrimaryWindow, Window, WindowPlugin, WindowResolution},
+    winit::WinitWindows,
 };
 
-use tabs_app::states::{ AppState, StartupPlugin, SongSelectPlugin };
-use tabs_app::file::config::ConfigPlugin;
-use tabs_app::widgets::UiLayerPlugin;
 use tabs_app::shaders::RegisterShadersPlugin;
+use tabs_app::states::{AppState, GameplayPlugin, SongSelectPlugin, StartupPlugin};
+use tabs_app::widgets::UiLayerPlugin;
+use tabs_app::{file::config::ConfigPlugin, states::GameState};
 
 #[cfg(not(feature = "production"))]
-use tabs_app::debug::{ DebugPlugin };
+use tabs_app::debug::DebugPlugin;
 
 fn main() {
     App::new()
         .add_plugins((
             ConfigPlugin,
-            #[cfg(not(feature = "production"))] DebugPlugin,
+            #[cfg(not(feature = "production"))]
+            DebugPlugin,
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "TABS".to_string(),
@@ -30,8 +31,10 @@ fn main() {
             UiLayerPlugin,
             StartupPlugin,
             SongSelectPlugin,
+            GameplayPlugin,
         ))
         .init_state::<AppState>()
+        .init_state::<GameState>()
         .add_systems(OnEnter(AppState::InitialLoad), start_maximized)
         .run();
 }
@@ -39,7 +42,7 @@ fn main() {
 fn start_maximized(
     winit_windows: NonSend<WinitWindows>,
     primary_window_query: Query<Entity, With<PrimaryWindow>>,
-    mut windows: Query<&mut Window>
+    mut windows: Query<&mut Window>,
 ) {
     if let Ok(window_entity) = primary_window_query.single() {
         if let Some(window) = winit_windows.get_window(window_entity) {

@@ -875,36 +875,30 @@ impl ResizeCorner {
                       corners: Query<&ResizeCorner>| {
                     let drag = trigger.event();
 
-                    if let Ok(resize_corner) = corners.get(trigger.target()) {
-                        if let Ok(mut node) = nodes.get_mut(resize_corner.window_entity) {
-                            if let Ok(layout) = computed.get(resize_corner.window_entity) {
-                                let new_width_px = (layout.size.x + drag.delta.x).max(50.0);
-                                match node.width {
-                                    Val::Px(_) => {
-                                        node.width = Val::Px(new_width_px);
-                                    }
-                                    Val::Percent(pct) => {
-                                        let total = layout.unrounded_size.x / (pct / 100.0);
-                                        node.width = Val::Percent((new_width_px / total) * 100.0);
-                                    }
-                                    _ => {
-                                        node.width = Val::Px(new_width_px);
-                                    }
+                    if let Ok(resize) = corners.get(trigger.target()) {
+                        if let Ok(mut node) = nodes.get_mut(resize.window_entity) {
+                            if let Ok(layout) = computed.get(resize.window_entity) {
+                                let logical_size = layout.size() * layout.inverse_scale_factor();
+                                let dx = drag.delta.x;
+                                let dy = drag.delta.y;
+                                if dx.abs() < 1.0 && dy.abs() < 1.0 {
+                                    return;
                                 }
 
-                                let new_height_px = (layout.size.y + drag.delta.y).max(50.0);
-                                match node.height {
-                                    Val::Px(_) => {
-                                        node.height = Val::Px(new_height_px);
-                                    }
-                                    Val::Percent(pct) => {
-                                        let total = layout.unrounded_size.y / (pct / 100.0);
-                                        node.height = Val::Percent((new_height_px / total) * 100.0);
-                                    }
-                                    _ => {
-                                        node.height = Val::Px(new_height_px);
-                                    }
-                                }
+                                let curr_w = match node.width {
+                                    Val::Px(px) => px,
+                                    _ => logical_size.x,
+                                };
+                                let curr_h = match node.height {
+                                    Val::Px(px) => px,
+                                    _ => logical_size.y,
+                                };
+
+                                let new_w = (curr_w + dx).max(50.0);
+                                let new_h = (curr_h + dy).max(50.0);
+
+                                node.width = Val::Px(new_w);
+                                node.height = Val::Px(new_h);
                             }
                         }
                     }

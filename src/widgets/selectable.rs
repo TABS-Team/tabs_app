@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use crate::widgets::{Active, ButtonStyle, ButtonType, GenericButton, UiBorder, UiContext};
 use bevy::prelude::*;
-use bevy::window::{ SystemCursorIcon };
+use bevy::window::SystemCursorIcon;
 use bevy::winit::cursor::CursorIcon;
-use crate::widgets::{ UiContext, UiBorder, ButtonStyle, ButtonType, GenericButton, Active };
 
 #[derive(Event)]
 pub struct SelectedEvent {
@@ -66,7 +66,7 @@ impl SelectableBuilder {
     pub fn new(
         selectable_type: SelectableType,
         buttons: &Vec<SelectableButton>,
-        default_selected: &Vec<usize>
+        default_selected: &Vec<usize>,
     ) -> Self {
         SelectableBuilder {
             selectable_type: selectable_type,
@@ -113,12 +113,18 @@ impl SelectableBuilder {
                 let mut entities: Vec<Entity> = vec![];
                 let mut entity_comps: Vec<SelectableItem> = vec![];
                 for (i, button) in self.buttons.iter().enumerate() {
-                    let btn_comp = SelectableItem { id: button.id.clone(), selected: false };
+                    let btn_comp = SelectableItem {
+                        id: button.id.clone(),
+                        selected: false,
+                    };
                     let btn_entity = GenericButton::builder(button.button_type.clone())
                         .style(self.style.button_style.clone())
                         .spawn(container, ctx);
 
-                    entity_comps.push(SelectableItem { id: button.id.clone(), selected: false });
+                    entity_comps.push(SelectableItem {
+                        id: button.id.clone(),
+                        selected: false,
+                    });
                     comp.selected.insert(btn_entity, false);
                     comp.button_id_map.insert(button.id.clone(), btn_entity);
 
@@ -138,18 +144,27 @@ impl SelectableBuilder {
                     } else {
                         BorderRadius::default()
                     };
-                    container.commands().entity(btn_entity).insert(border_radius);
+                    container
+                        .commands()
+                        .entity(btn_entity)
+                        .insert(border_radius);
                     entities.push(btn_entity);
                     Selectable::register_observers(btn_entity, &mut container.commands_mut());
                 }
 
                 for index in &self.default_selected {
-                    container.commands_mut().entity(entities[*index]).insert(Active);
+                    container
+                        .commands_mut()
+                        .entity(entities[*index])
+                        .insert(Active);
                     entity_comps[*index].selected = true;
                 }
 
                 for (i, entity) in entities.iter().enumerate() {
-                    container.commands_mut().entity(*entity).insert(entity_comps[i].clone());
+                    container
+                        .commands_mut()
+                        .entity(*entity)
+                        .insert(entity_comps[i].clone());
                 }
             })
             .insert(comp)
@@ -163,98 +178,99 @@ impl Selectable {
     pub fn builder(
         selectable_type: SelectableType,
         buttons: &Vec<SelectableButton>,
-        default_selected: &Vec<usize>
+        default_selected: &Vec<usize>,
     ) -> SelectableBuilder {
         SelectableBuilder::new(selectable_type, buttons, default_selected)
     }
 
     fn register_observers(entity: Entity, mut commands: &mut Commands) {
-        commands
-            .entity(entity)
-            .observe(
-                |
-                    trigger: Trigger<Pointer<Click>>,
-                    mut selectable_query: Query<&mut Selectable>,
-                    parents: Query<&ChildOf>,
-                    mut commands: Commands
-                | {
-                    let entity = trigger.target();
-                    let Ok(parent) = parents.get(entity) else {
-                        return;
-                    };
-                    if let Ok(mut selectable) = selectable_query.get_mut(parent.parent()) {
-                        match selectable.selectable_type {
-                            SelectableType::Radio => {
-                                for (curr_entity, value) in selectable.selected.iter_mut() {
-                                    if entity != *curr_entity {
-                                        *value = false;
-                                        commands.entity(*curr_entity).remove::<Active>();
-                                    }
+        commands.entity(entity).observe(
+            |trigger: Trigger<Pointer<Click>>,
+             mut selectable_query: Query<&mut Selectable>,
+             parents: Query<&ChildOf>,
+             mut commands: Commands| {
+                let entity = trigger.target();
+                let Ok(parent) = parents.get(entity) else {
+                    return;
+                };
+                if let Ok(mut selectable) = selectable_query.get_mut(parent.parent()) {
+                    match selectable.selectable_type {
+                        SelectableType::Radio => {
+                            for (curr_entity, value) in selectable.selected.iter_mut() {
+                                if entity != *curr_entity {
+                                    *value = false;
+                                    commands.entity(*curr_entity).remove::<Active>();
                                 }
                             }
-                            SelectableType::Checkbox => {}
+                        }
+                        SelectableType::Checkbox => {}
+                    }
+
+                    let selectable_type = selectable.selectable_type;
+
+                    if let Some(mut is_selected) = selectable.selected.get_mut(&entity) {
+                        let previous_select = is_selected.clone();
+                        if selectable_type == SelectableType::Checkbox {
+                            *is_selected = !*is_selected;
+                        } else {
+                            *is_selected = true;
+                        }
+                        if *is_selected == previous_select {
+                            return;
                         }
 
-                        let selectable_type = selectable.selectable_type;
-
-                        if let Some(mut is_selected) = selectable.selected.get_mut(&entity) {
-                            let previous_select = is_selected.clone();
-                            if selectable_type == SelectableType::Checkbox {
-                                *is_selected = !*is_selected;
-                            } else {
-                                *is_selected = true;
-                            }
-
-                            if *is_selected == previous_select {
-                                return;
-                            }
-
-                            if *is_selected {
-                                commands.entity(entity).insert(Active);
-                            } else {
-                                commands.entity(entity).remove::<Active>();
-                            }
+                        if *is_selected {
+                            commands.entity(entity).insert(Active);
+                        } else {
+                            commands.entity(entity).remove::<Active>();
                         }
                     }
                 }
-            );
+            },
+        );
     }
 }
 
-pub fn active_added_listener(
+pub fn active_change_listener(
     mut commands: Commands,
-    query: Query<Entity, Added<Active>>,
-    mut btn_query: Query<&mut GenericButton>,
-    mut ev_writer: EventWriter<SelectedEvent>,
-    selected_item_query: Query<&SelectableItem>
+    mut query: Query<(Entity, &ChildOf, Ref<Active>, &mut SelectableItem), Changed<Active>>,
 ) {
-    for entity in query.iter() {
-        let Ok(item_comp) = selected_item_query.get(entity) else {
-            return;
-        };
-        ev_writer.write(SelectedEvent {
-            id: item_comp.id.clone(),
-            entity: entity,
-            selected: item_comp.selected,
-        });
+    for (entity, child_of, active_ref, mut item_comp) in &mut query {
+        if active_ref.is_added() {
+            item_comp.selected = true;
+
+            let parent = child_of.parent();
+            commands.trigger_targets(
+                SelectedEvent {
+                    id: item_comp.id.clone(),
+                    entity,
+                    selected: item_comp.selected,
+                },
+                parent,
+            );
+        }
     }
 }
 
 pub fn active_removed_listener(
     mut commands: Commands,
-    mut query: RemovedComponents<Active>,
-    mut btn_query: Query<&mut GenericButton>,
-    mut ev_writer: EventWriter<SelectedEvent>,
-    selected_item_query: Query<&SelectableItem>
+    mut removed: RemovedComponents<Active>,
+    selected_item_query: Query<&SelectableItem>,
+    child_of_query: Query<&ChildOf>,
 ) {
-    for entity in query.read() {
-        let Ok(item_comp) = selected_item_query.get(entity) else {
-            return;
-        };
-        ev_writer.write(SelectedEvent {
-            id: item_comp.id.clone(),
-            entity: entity,
-            selected: item_comp.selected,
-        });
+    for entity in removed.read() {
+        if let Ok(item_comp) = selected_item_query.get(entity) {
+            if let Ok(child_of) = child_of_query.get(entity) {
+                let parent = child_of.parent();
+                commands.trigger_targets(
+                    SelectedEvent {
+                        id: item_comp.id.clone(),
+                        entity,
+                        selected: false,
+                    },
+                    parent,
+                );
+            }
+        }
     }
 }

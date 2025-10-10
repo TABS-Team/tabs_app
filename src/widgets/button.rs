@@ -1,24 +1,26 @@
+use crate::widgets::{UiBorder, UiContext, UiIcon};
 use bevy::prelude::*;
-use bevy::window::{ SystemCursorIcon };
+use bevy::window::SystemCursorIcon;
 use bevy::winit::cursor::CursorIcon;
-use crate::widgets::{ UiContext, UiBorder, UiIcon };
 
 #[derive(Component, Clone, Copy, Debug)]
 pub struct UiButton;
 
 pub fn default_button_setup(mut commands: Commands, query: Query<Entity, Added<UiButton>>) {
     for entity in query.iter() {
-        commands
-            .entity(entity)
-            .observe(move |_: Trigger<Pointer<Over>>, mut cmds: Commands, ctx: UiContext| {
-                cmds.entity(*ctx.window).insert(CursorIcon::System(SystemCursorIcon::Pointer));
-            });
+        commands.entity(entity).observe(
+            move |_: Trigger<Pointer<Over>>, mut cmds: Commands, ctx: UiContext| {
+                cmds.entity(*ctx.window)
+                    .insert(CursorIcon::System(SystemCursorIcon::Pointer));
+            },
+        );
 
-        commands
-            .entity(entity)
-            .observe(move |_: Trigger<Pointer<Out>>, mut cmds: Commands, ctx: UiContext| {
-                cmds.entity(*ctx.window).insert(CursorIcon::System(SystemCursorIcon::Default));
-            });
+        commands.entity(entity).observe(
+            move |_: Trigger<Pointer<Out>>, mut cmds: Commands, ctx: UiContext| {
+                cmds.entity(*ctx.window)
+                    .insert(CursorIcon::System(SystemCursorIcon::Default));
+            },
+        );
     }
 }
 
@@ -97,7 +99,11 @@ impl ButtonBuilder {
     }
 
     pub fn spawn(&self, commands: &mut ChildSpawnerCommands, ctx: &UiContext) -> Entity {
-        let width = if self.style.stretch { Val::Percent(100.0) } else { Val::Auto };
+        let width = if self.style.stretch {
+            Val::Percent(100.0)
+        } else {
+            Val::Auto
+        };
         let mut node = Node {
             width: width,
             height: Val::Auto,
@@ -130,19 +136,35 @@ impl ButtonBuilder {
         }
 
         if let Some(box_shadow) = &self.style.box_shadow {
-            commands.commands().entity(entity).insert(box_shadow.clone());
+            commands
+                .commands()
+                .entity(entity)
+                .insert(box_shadow.clone());
         }
 
         let text_comp = match &self.label {
             ButtonType::Labeled(ref label) => Text::new(label),
-            ButtonType::Icon(ref icon) => Text::new(String::from(icon.get_code())),
+            ButtonType::Icon(ref icon) => {
+                let glyph = icon.glyph(&ctx.icons).unwrap_or_else(|| {
+                    warn!("Material icon '{}' not found", icon.name());
+                    "?"
+                });
+                Text::new(glyph)
+            }
         };
 
         let text_font_comp = match &self.label {
-            ButtonType::Labeled(label) => TextFont { font_size: self.style.font_size, ..default() },
-            ButtonType::Icon(icon) => {
+            ButtonType::Labeled(label) => TextFont {
+                font_size: self.style.font_size,
+                ..default()
+            },
+            ButtonType::Icon(_icon) => {
                 let icon_font = ctx.asset_server.load("fonts/GoogleMaterialIcons.ttf");
-                TextFont { font_size: self.style.font_size, font: icon_font, ..default() }
+                TextFont {
+                    font_size: self.style.font_size,
+                    font: icon_font,
+                    ..default()
+                }
             }
         };
 
@@ -172,52 +194,52 @@ impl GenericButton {
         commands
             .entity(entity)
             .observe(
-                |
-                    trigger: Trigger<Pointer<Over>>,
-                    btn_query: Query<&GenericButton>,
-                    mut commands: Commands
-                | {
+                |trigger: Trigger<Pointer<Over>>,
+                 btn_query: Query<&GenericButton>,
+                 mut commands: Commands| {
                     let entity = trigger.target();
                     if let Ok(btn_comp) = btn_query.get(entity) {
-                        commands.entity(entity).insert(BackgroundColor(btn_comp.hover_color));
+                        commands
+                            .entity(entity)
+                            .insert(BackgroundColor(btn_comp.hover_color));
                     }
-                }
+                },
             )
             .observe(
-                |
-                    trigger: Trigger<Pointer<Out>>,
-                    btn_query: Query<&GenericButton>,
-                    active_query: Query<&Active>,
-                    mut commands: Commands
-                | {
+                |trigger: Trigger<Pointer<Out>>,
+                 btn_query: Query<&GenericButton>,
+                 active_query: Query<&Active>,
+                 mut commands: Commands| {
                     let entity = trigger.target();
                     if let Ok(btn_comp) = btn_query.get(entity) {
-                        commands.entity(entity).insert(BackgroundColor(btn_comp.current_color));
+                        commands
+                            .entity(entity)
+                            .insert(BackgroundColor(btn_comp.current_color));
                     }
-                }
+                },
             )
             .observe(
-                |
-                    trigger: Trigger<Pointer<Pressed>>,
-                    btn_query: Query<&GenericButton>,
-                    mut commands: Commands
-                | {
+                |trigger: Trigger<Pointer<Pressed>>,
+                 btn_query: Query<&GenericButton>,
+                 mut commands: Commands| {
                     let entity = trigger.target();
                     if let Ok(btn_comp) = btn_query.get(entity) {
-                        commands.entity(entity).insert(BackgroundColor(btn_comp.press_color));
+                        commands
+                            .entity(entity)
+                            .insert(BackgroundColor(btn_comp.press_color));
                     }
-                }
+                },
             )
             .observe(
-                |
-                    trigger: Trigger<Pointer<Released>>,
-                    btn_query: Query<&GenericButton>,
-                    active_query: Query<&Active>,
-                    mut commands: Commands
-                | {
+                |trigger: Trigger<Pointer<Released>>,
+                 btn_query: Query<&GenericButton>,
+                 active_query: Query<&Active>,
+                 mut commands: Commands| {
                     let entity = trigger.target();
                     if let Ok(btn_comp) = btn_query.get(entity) {
-                        commands.entity(entity).insert(BackgroundColor(btn_comp.hover_color));
+                        commands
+                            .entity(entity)
+                            .insert(BackgroundColor(btn_comp.hover_color));
 
                         if btn_comp.stay_active {
                             if let Ok(active_comp) = active_query.get(entity) {
@@ -227,7 +249,7 @@ impl GenericButton {
                             }
                         }
                     }
-                }
+                },
             );
     }
 }
@@ -236,12 +258,14 @@ impl GenericButton {
 pub fn add_active_listener(
     mut commands: Commands,
     query: Query<Entity, Added<Active>>,
-    mut btn_query: Query<&mut GenericButton>
+    mut btn_query: Query<&mut GenericButton>,
 ) {
     for entity in query.iter() {
         if let Ok(mut button_comp) = btn_query.get_mut(entity) {
             button_comp.current_color = button_comp.hover_color;
-            commands.entity(entity).insert(BackgroundColor(button_comp.current_color));
+            commands
+                .entity(entity)
+                .insert(BackgroundColor(button_comp.current_color));
         }
     }
 }
@@ -249,12 +273,14 @@ pub fn add_active_listener(
 pub fn remove_active_listener(
     mut commands: Commands,
     mut removed: RemovedComponents<Active>,
-    mut btn_query: Query<&mut GenericButton>
+    mut btn_query: Query<&mut GenericButton>,
 ) {
     for entity in removed.read() {
         if let Ok(mut button_comp) = btn_query.get_mut(entity) {
             button_comp.current_color = button_comp.color;
-            commands.entity(entity).insert(BackgroundColor(button_comp.current_color));
+            commands
+                .entity(entity)
+                .insert(BackgroundColor(button_comp.current_color));
         }
     }
 }

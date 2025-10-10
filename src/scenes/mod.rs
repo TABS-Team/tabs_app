@@ -2,7 +2,12 @@ use bevy::prelude::*;
 
 pub mod song_selection;
 
-pub use song_selection::{ setup_song_select, check_song_assets_ready, setup_song_preview };
+pub use song_selection::{
+    check_song_assets_ready, cleanup_song_preview, handle_close_preview_input, setup_song_preview,
+    setup_song_select, transition_preview_to_gameplay,
+};
+
+pub mod gameplay;
 
 use crate::widgets::UiLayer;
 
