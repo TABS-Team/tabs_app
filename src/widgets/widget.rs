@@ -12,7 +12,7 @@ pub struct UiContext<'w, 's> {
     pub materials: Res<'w, Assets<AbaaMaterial>>,
     pub children_query: Query<'w, 's, &'static Children>,
     pub asset_server: Res<'w, AssetServer>,
-    pub window: Single<'w, Entity, With<Window>>,
+    pub window: Single<'w, 's, Entity, With<Window>>,
     pub icons: Res<'w, MaterialIcons>,
 }
 

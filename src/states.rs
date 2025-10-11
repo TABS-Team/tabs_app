@@ -2,8 +2,8 @@ use crate::file::settings::setup_settings;
 use crate::file::theme::setup_theme;
 use crate::file::{Song, SongLoader, Tab, TabLoader};
 use crate::scenes::gameplay::{
-    check_loading_progress, log_tab_progress, setup_loading_ui, start_audio, start_loading_assets,
-    update_loading_ui, GameplayAssets, SongPlayback,
+    check_loading_progress, setup_loading_ui, start_game_session, start_loading_assets,
+    track_timeline, update_loading_ui, GameplayAssets, SongPlayback,
 };
 use crate::scenes::{
     check_song_assets_ready, cleanup_song_preview, handle_close_preview_input, setup_camera,
@@ -120,7 +120,7 @@ impl Plugin for GameplayPlugin {
                 },
                 update_loading_ui,
             )
-            .add_systems(OnEnter(GameState::InGame), start_audio)
-            .add_systems(Update, log_tab_progress.run_if(in_state(GameState::InGame)));
+            .add_systems(OnEnter(GameState::InGame), start_game_session)
+            .add_systems(Update, track_timeline.run_if(in_state(GameState::InGame)));
     }
 }

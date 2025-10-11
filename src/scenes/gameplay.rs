@@ -122,7 +122,7 @@ pub fn update_loading_ui(mut query: Query<&mut Visibility, With<LoadingUI>>) {
     }
 }
 
-pub fn start_audio(
+pub fn start_game_session(
     mut commands: Commands,
     assets: Res<GameplayAssets>,
     mut song_clock: ResMut<SongPlayback>,
@@ -131,7 +131,7 @@ pub fn start_audio(
     song_clock.mark_started();
 }
 
-pub fn log_tab_progress(
+pub fn track_timeline(
     assets: Res<GameplayAssets>,
     song_clock: Res<SongPlayback>,
     tabs: Res<Assets<Tab>>,
