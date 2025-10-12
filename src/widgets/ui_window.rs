@@ -830,6 +830,10 @@ impl ResizeCorner {
                 bottom: Val::Px(0.0),
                 ..default()
             })
+            .insert(UiTransform {
+                scale: Vec2::new(-1.0, 1.0),
+                ..default()
+            })
             .insert(component)
             .with_children(|corner| {
                 corner
@@ -840,11 +844,7 @@ impl ResizeCorner {
                         font: icon_font,
                         ..default()
                     })
-                    .insert(TextColor(style.resize_handle_color))
-                    .insert(Transform {
-                        scale: Vec3::new(1.0, -1.0, 1.0),
-                        ..default()
-                    });
+                    .insert(TextColor(style.resize_handle_color));
             })
             .id();
 
@@ -881,7 +881,6 @@ impl ResizeCorner {
                       computed: Query<&ComputedNode>,
                       corners: Query<&ResizeCorner>| {
                     let drag = trigger.event();
-
                     if let Ok(resize) = corners.get(trigger.entity) {
                         if let Ok(mut node) = nodes.get_mut(resize.window_entity) {
                             if let Ok(layout) = computed.get(resize.window_entity) {
