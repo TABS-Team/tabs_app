@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::ui::UiTargetCamera;
+use bevy::ui::{ComputedNode, UiTargetCamera};
 use std::collections::HashMap;
 
 use crate::file::settings::Settings;
@@ -16,6 +16,7 @@ const NOTE_FONT_SIZE: f32 = 16.0;
 const BLOCK_GAP_PX: f32 = 16.0;
 const BLOCK_PADDING_PX: f32 = 12.0;
 const OVERLAY_ALPHA: f32 = 0.60;
+const BLOCK_SHIFT_DURATION: f32 = 0.18;
 
 pub struct StringTimelinePlugin;
 
@@ -61,13 +62,17 @@ struct StringTimelineView {
     cached_string_count: usize,
     base_block_index: i32,
     string_colors: Vec<Color>,
+    shift_animation: Option<ShiftAnimation>,
 }
 
 struct BlockView {
     index: i32,
     root: Entity,
     overlay: Entity,
+    fade_overlay: Entity,
     rows: Vec<BlockRow>,
+    is_removing: bool,
+    stored_height: Option<f32>,
 }
 
 struct BlockRow {
@@ -86,6 +91,15 @@ struct BlockOverlay;
 
 #[derive(Component)]
 struct BlockStack;
+
+struct ShiftAnimation {
+    target_base_index: i32,
+    removing_index: i32,
+    duration: f32,
+    elapsed: f32,
+    initial_height: f32,
+    initial_padding: f32,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct NoteKey {
@@ -201,6 +215,7 @@ fn setup_timeline_ui(
     view.cached_string_count = 0;
     view.base_block_index = 0;
     view.string_colors = resolve_string_palette(&settings, &themes);
+    view.shift_animation = None;
 }
 
 fn teardown_timeline_ui(mut commands: Commands, mut view: ResMut<StringTimelineView>) {
@@ -213,18 +228,30 @@ fn teardown_timeline_ui(mut commands: Commands, mut view: ResMut<StringTimelineV
     view.cached_string_count = 0;
     view.base_block_index = 0;
     view.string_colors.clear();
+    view.shift_animation = None;
 }
 
 fn update_timeline(
     mut commands: Commands,
+    time: Res<Time>,
     feed: Res<StringTimelineFeed>,
     mut view: ResMut<StringTimelineView>,
-    children_query: Query<&Children>,
     mut node_query: Query<&mut Node>,
+    mut background_query: Query<&mut BackgroundColor>,
+    computed_query: Query<&ComputedNode>,
 ) {
     let Some(block_stack) = view.block_stack else {
         return;
     };
+
+    let delta_seconds = time.delta_secs();
+    progress_shift_animation(
+        &mut commands,
+        &mut view,
+        delta_seconds,
+        &mut node_query,
+        &mut background_query,
+    );
 
     if feed.string_count == 0 {
         clear_all_blocks(&mut commands, &mut view);
@@ -247,29 +274,50 @@ fn update_timeline(
         view.base_block_index = current_block_index;
     }
 
-    if current_block_index < view.base_block_index {
+    if current_block_index < view.base_block_index && view.shift_animation.is_none() {
         view.base_block_index = current_block_index;
     }
 
-    let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
-    let last_block_index = view.base_block_index + visible_blocks - 1;
-    let threshold_block = view.base_block_index + (visible_blocks - 2).max(0);
+    if view.shift_animation.is_none() {
+        let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
+        let last_block_index = view.base_block_index + visible_blocks - 1;
+        let threshold_block = view.base_block_index + (visible_blocks - 2).max(0);
+        let mut desired_base = view.base_block_index;
 
-    if current_block_index > last_block_index {
-        view.base_block_index = current_block_index - (visible_blocks - 1);
-    } else if current_block_index >= threshold_block && block_progress >= 0.95 {
-        view.base_block_index = (view.base_block_index + 1).max(0);
+        if current_block_index > last_block_index {
+            desired_base = current_block_index - (visible_blocks - 1);
+        } else if current_block_index >= threshold_block && block_progress >= 0.95 {
+            desired_base = (view.base_block_index + 1).max(0);
+        }
+
+        if desired_base > view.base_block_index {
+            let started = start_shift_animation(
+                &mut view,
+                desired_base,
+                &mut node_query,
+                &mut background_query,
+                &computed_query,
+            );
+            if !started {
+                view.base_block_index = desired_base;
+            }
+        } else {
+            view.base_block_index = desired_base;
+        }
+    } else if view.shift_animation.is_some() {
+        let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
+        let last_block_index = view.base_block_index + visible_blocks - 1;
+        if current_block_index > last_block_index {
+            if let Some(animation) = view.shift_animation.as_mut() {
+                animation.target_base_index =
+                    (current_block_index - (visible_blocks - 1)).max(animation.target_base_index);
+            }
+        }
     }
 
     ensure_blocks(&mut commands, &mut view, block_stack, feed.string_count);
 
-    render_notes(
-        &mut commands,
-        &mut view,
-        &feed,
-        current_block_index,
-        &children_query,
-    );
+    render_notes(&mut commands, &mut view, &feed, current_block_index);
     let view_ref: &StringTimelineView = &view;
     update_overlays(
         view_ref,
@@ -284,6 +332,153 @@ fn update_timeline(
         block_progress,
         &mut node_query,
     );
+}
+
+fn start_shift_animation(
+    view: &mut StringTimelineView,
+    target_base_index: i32,
+    node_query: &mut Query<&mut Node>,
+    background_query: &mut Query<&mut BackgroundColor>,
+    computed_query: &Query<&ComputedNode>,
+) -> bool {
+    if view.shift_animation.is_some() {
+        return false;
+    }
+
+    let removing_index = view.base_block_index;
+    if !view
+        .blocks
+        .iter()
+        .any(|block| block.index == removing_index && !block.is_removing)
+    {
+        return false;
+    }
+
+    let mut initial_height = None;
+    for block in &mut view.blocks {
+        let is_target = block.index == removing_index;
+        let Some(height) = freeze_block_layout(block, node_query, computed_query, is_target) else {
+            continue;
+        };
+
+        if is_target {
+            if let Ok(mut node) = node_query.get_mut(block.root) {
+                node.padding = UiRect::all(Val::Px(BLOCK_PADDING_PX));
+            }
+            if let Ok(mut fade_color) = background_query.get_mut(block.fade_overlay) {
+                fade_color.0.set_alpha(0.0);
+            }
+            block.is_removing = true;
+            initial_height = Some(height);
+        }
+    }
+
+    let Some(initial_height) = initial_height else {
+        unfreeze_remaining_blocks(view, node_query);
+        return false;
+    };
+
+    view.shift_animation = Some(ShiftAnimation {
+        target_base_index,
+        removing_index,
+        duration: BLOCK_SHIFT_DURATION,
+        elapsed: 0.0,
+        initial_height,
+        initial_padding: BLOCK_PADDING_PX,
+    });
+
+    true
+}
+
+fn progress_shift_animation(
+    commands: &mut Commands,
+    view: &mut StringTimelineView,
+    delta_seconds: f32,
+    node_query: &mut Query<&mut Node>,
+    background_query: &mut Query<&mut BackgroundColor>,
+) {
+    let Some(animation) = view.shift_animation.as_mut() else {
+        return;
+    };
+
+    animation.elapsed += delta_seconds;
+    let progress = (animation.elapsed / animation.duration).clamp(0.0, 1.0);
+
+    let Some(position) = view
+        .blocks
+        .iter()
+        .position(|block| block.index == animation.removing_index)
+    else {
+        view.base_block_index = animation.target_base_index;
+        view.shift_animation = None;
+        unfreeze_remaining_blocks(view, node_query);
+        return;
+    };
+
+    if let Some(block) = view.blocks.get_mut(position) {
+        if let Ok(mut node) = node_query.get_mut(block.root) {
+            let current_height = animation.initial_height * (1.0 - progress);
+            node.height = Val::Px(current_height.max(0.0));
+            node.max_height = Val::Px(current_height.max(0.0));
+            let padding = animation.initial_padding * (1.0 - progress);
+            node.padding = UiRect::all(Val::Px(padding.max(0.0)));
+        }
+
+        if let Ok(mut fade_color) = background_query.get_mut(block.fade_overlay) {
+            fade_color.0.set_alpha(progress.clamp(0.0, 1.0));
+        }
+    }
+
+    if progress >= 1.0 {
+        if position < view.blocks.len() {
+            let block = view.blocks.remove(position);
+            clear_block(commands, block, view.indicator, view.block_stack);
+        }
+        view.base_block_index = animation.target_base_index;
+        view.shift_animation = None;
+        unfreeze_remaining_blocks(view, node_query);
+    }
+}
+
+fn freeze_block_layout(
+    block: &mut BlockView,
+    node_query: &mut Query<&mut Node>,
+    computed_query: &Query<&ComputedNode>,
+    is_removing: bool,
+) -> Option<f32> {
+    let height = computed_query
+        .get(block.root)
+        .map(|computed| computed.size().y)
+        .unwrap_or(0.0)
+        .max(1.0);
+
+    if let Ok(mut node) = node_query.get_mut(block.root) {
+        node.flex_grow = 0.0;
+        node.height = Val::Px(height);
+        node.min_height = if is_removing {
+            Val::Px(0.0)
+        } else {
+            Val::Px(height)
+        };
+        node.max_height = Val::Px(height);
+    }
+
+    block.stored_height = Some(height);
+    Some(height)
+}
+
+fn unfreeze_remaining_blocks(view: &mut StringTimelineView, node_query: &mut Query<&mut Node>) {
+    for block in &mut view.blocks {
+        block.is_removing = false;
+        if let Ok(mut node) = node_query.get_mut(block.root) {
+            node.flex_grow = 1.0;
+            node.height = Val::Auto;
+            node.min_height = Val::Auto;
+            node.max_height = Val::Auto;
+            node.padding = UiRect::all(Val::Px(BLOCK_PADDING_PX));
+        }
+        block.stored_height = None;
+    }
 }
 
 fn ensure_blocks(
@@ -368,6 +563,23 @@ fn spawn_block(
 
     commands.entity(block_root).add_child(overlay);
 
+    let fade_overlay = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(0.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.08, 0.0)),
+            ZIndex(3),
+        ))
+        .id();
+
+    commands.entity(block_root).add_child(fade_overlay);
+
     let rows_container = commands
         .spawn(Node {
             width: Val::Percent(100.0),
@@ -440,7 +652,10 @@ fn spawn_block(
         index,
         root: block_root,
         overlay,
+        fade_overlay,
         rows,
+        is_removing: false,
+        stored_height: None,
     }
 }
 
@@ -449,7 +664,6 @@ fn render_notes(
     view: &mut StringTimelineView,
     feed: &StringTimelineFeed,
     current_block_index: i32,
-    children_query: &Query<&Children>,
 ) {
     let block_duration = TIMELINE_BLOCK_DURATION;
     let string_colors = view.string_colors.clone();
@@ -552,11 +766,6 @@ fn render_notes(
 
                 for key in stale_keys {
                     if let Some(entity) = row.rendered_notes.remove(&key) {
-                        if let Ok(children) = children_query.get(entity) {
-                            for child in children.iter() {
-                                commands.entity(child.clone()).despawn();
-                            }
-                        }
                         commands.entity(entity).despawn();
                     }
                 }
@@ -633,6 +842,7 @@ fn clear_all_blocks(commands: &mut Commands, view: &mut StringTimelineView) {
         clear_block(commands, block, view.indicator, view.block_stack);
     }
     view.base_block_index = 0;
+    view.shift_animation = None;
 }
 
 fn clear_block(
