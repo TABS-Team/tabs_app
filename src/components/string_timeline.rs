@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use bevy::ui::{ComputedNode, UiTargetCamera};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::file::settings::Settings;
+use crate::file::song::Techniques;
 use crate::file::theme::{fallback_instrument_key_palette, Themes};
 use crate::scenes::MainCamera;
 use crate::states::GameState;
@@ -17,12 +18,20 @@ const BLOCK_GAP_PX: f32 = 16.0;
 const BLOCK_PADDING_PX: f32 = 12.0;
 const OVERLAY_ALPHA: f32 = 0.60;
 const BLOCK_SHIFT_DURATION: f32 = 0.18;
+const FRET_VIEW_HEIGHT_PERCENT: f32 = 100.0 - TIMELINE_HEIGHT_PERCENT;
+const FRET_MARKER_DIAMETER_PX: f32 = 36.0;
+const FRET_MARKER_SECONDARY_SCALE: f32 = 0.7;
+const MIN_FRET_SPAN: i32 = 4;
+const NOTE_GROUP_TOLERANCE: f32 = 0.08;
+const FRET_ZOOM_DURATION: f32 = 0.28;
+const FRET_ZOOM_START_SCALE: f32 = 0.85;
 
 pub struct StringTimelinePlugin;
 
 impl Plugin for StringTimelinePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StringTimelineFeed>()
+            .init_resource::<TechniqueVisualizationRegistry>()
             .init_resource::<StringTimelineView>()
             .add_systems(OnEnter(GameState::InGame), setup_timeline_ui)
             .add_systems(OnExit(GameState::InGame), teardown_timeline_ui)
@@ -51,8 +60,115 @@ pub struct TimelineNote {
     pub sustain: f32,
     pub string_index: usize,
     pub fret: i32,
+    pub techniques: Vec<Techniques>,
+    pub additional_frets: Vec<i32>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct NoteKey {
+    time_bits: u32,
+    string_index: usize,
+    fret: i32,
+    metadata_hash: u64,
+}
+
+impl NoteKey {
+    fn new(note: &TimelineNote) -> Self {
+        let mut technique_hash = 0u64;
+        for technique in &note.techniques {
+            technique_hash = technique_hash
+                .wrapping_mul(31)
+                .wrapping_add((*technique as u8 as u64) + 1);
+        }
+        let mut extra_hash = 0u64;
+        for extra in &note.additional_frets {
+            extra_hash = extra_hash
+                .wrapping_mul(41)
+                .wrapping_add((*extra as i64 + 64) as u64);
+        }
+        let metadata_hash = technique_hash.wrapping_mul(131).wrapping_add(extra_hash);
+        Self {
+            time_bits: note.time.to_bits(),
+            string_index: note.string_index,
+            fret: note.fret,
+            metadata_hash,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FretMarkerRole {
+    Primary,
+    Additional(i32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct FretMarkerKey {
+    note: NoteKey,
+    role: FretMarkerRole,
+}
+
+impl FretMarkerKey {
+    fn primary(note: &TimelineNote) -> Self {
+        FretMarkerKey {
+            note: NoteKey::new(note),
+            role: FretMarkerRole::Primary,
+        }
+    }
+
+    fn additional(note: &TimelineNote, fret: i32) -> Self {
+        FretMarkerKey {
+            note: NoteKey::new(note),
+            role: FretMarkerRole::Additional(fret),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FretRange {
+    start: i32,
+    end: i32,
+}
+
+impl FretRange {
+    fn new(mut start: i32, mut end: i32) -> Self {
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        while end - start < MIN_FRET_SPAN {
+            if start > 0 {
+                start -= 1;
+            }
+            if end - start >= MIN_FRET_SPAN {
+                break;
+            }
+            end += 1;
+        }
+        FretRange { start, end }
+    }
+
+    fn span(&self) -> usize {
+        (self.end - self.start + 1).max(1) as usize
+    }
+}
+
+struct FretZoomAnimation {
+    duration: f32,
+    elapsed: f32,
+    start_scale: f32,
+    target_scale: f32,
+}
+
+impl FretZoomAnimation {
+    fn new(start_scale: f32, target_scale: f32, duration: f32) -> Self {
+        FretZoomAnimation {
+            duration,
+            elapsed: 0.0,
+            start_scale,
+            target_scale,
+        }
+    }
+}
 #[derive(Resource, Default)]
 struct StringTimelineView {
     root: Option<Entity>,
@@ -63,6 +179,18 @@ struct StringTimelineView {
     base_block_index: i32,
     string_colors: Vec<Color>,
     shift_animation: Option<ShiftAnimation>,
+    fret_area: Option<Entity>,
+    fret_neck: Option<Entity>,
+    fret_grid_layer: Option<Entity>,
+    fret_marker_layer: Option<Entity>,
+    fret_string_layer: Option<Entity>,
+    fret_label: Option<Entity>,
+    fret_string_lines: Vec<Entity>,
+    fret_fret_lines: Vec<Entity>,
+    fret_markers: HashMap<FretMarkerKey, Entity>,
+    fret_current_signature: Vec<NoteKey>,
+    fret_current_range: Option<FretRange>,
+    fret_zoom_animation: Option<FretZoomAnimation>,
 }
 
 struct BlockView {
@@ -92,6 +220,24 @@ struct BlockOverlay;
 #[derive(Component)]
 struct BlockStack;
 
+#[derive(Component)]
+struct FretViewRoot;
+
+#[derive(Component)]
+struct FretNeckNode;
+
+#[derive(Component)]
+struct FretMarkerLayerNode;
+
+#[derive(Component)]
+struct FretStringLayerNode;
+
+#[derive(Component)]
+struct FretGridLayerNode;
+
+#[derive(Component)]
+struct FretMarker;
+
 struct ShiftAnimation {
     target_base_index: i32,
     removing_index: i32,
@@ -101,19 +247,106 @@ struct ShiftAnimation {
     initial_padding: f32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct NoteKey {
-    time_bits: u32,
-    string_index: usize,
-    fret: i32,
+#[derive(Clone, Copy)]
+struct NoteVisualStyle {
+    timeline_background: Option<Color>,
+    timeline_border_color: Option<Color>,
+    timeline_border_width: Option<f32>,
+    fret_background: Option<Color>,
+    fret_border_color: Option<Color>,
+    fret_border_width: Option<f32>,
 }
 
-impl NoteKey {
-    fn new(note: &TimelineNote) -> Self {
+impl NoteVisualStyle {
+    fn merged_with(self, other: NoteVisualStyle) -> NoteVisualStyle {
+        NoteVisualStyle {
+            timeline_background: other.timeline_background.or(self.timeline_background),
+            timeline_border_color: other.timeline_border_color.or(self.timeline_border_color),
+            timeline_border_width: other.timeline_border_width.or(self.timeline_border_width),
+            fret_background: other.fret_background.or(self.fret_background),
+            fret_border_color: other.fret_border_color.or(self.fret_border_color),
+            fret_border_width: other.fret_border_width.or(self.fret_border_width),
+        }
+    }
+}
+
+impl Default for NoteVisualStyle {
+    fn default() -> Self {
+        NoteVisualStyle {
+            timeline_background: None,
+            timeline_border_color: None,
+            timeline_border_width: None,
+            fret_background: None,
+            fret_border_color: None,
+            fret_border_width: None,
+        }
+    }
+}
+
+#[derive(Resource)]
+struct TechniqueVisualizationRegistry {
+    fallback: NoteVisualStyle,
+    styles: HashMap<Techniques, NoteVisualStyle>,
+}
+
+impl TechniqueVisualizationRegistry {
+    fn style_for(&self, techniques: &[Techniques]) -> NoteVisualStyle {
+        let mut style = self.fallback;
+        for technique in techniques {
+            if let Some(entry) = self.styles.get(technique) {
+                style = style.merged_with(*entry);
+            }
+        }
+        style
+    }
+}
+
+impl Default for TechniqueVisualizationRegistry {
+    fn default() -> Self {
+        let mut styles = HashMap::new();
+
+        styles.insert(
+            Techniques::Slide,
+            NoteVisualStyle {
+                timeline_border_color: Some(Color::srgb(0.85, 0.7, 0.25)),
+                timeline_border_width: Some(3.0),
+                fret_border_color: Some(Color::srgb(0.9, 0.75, 0.3)),
+                fret_border_width: Some(3.0),
+                ..default()
+            },
+        );
+
+        styles.insert(
+            Techniques::Bend,
+            NoteVisualStyle {
+                timeline_background: Some(Color::srgb(0.6, 0.3, 0.9)),
+                fret_background: Some(Color::srgb(0.55, 0.25, 0.85)),
+                ..default()
+            },
+        );
+
+        styles.insert(
+            Techniques::HammerOn,
+            NoteVisualStyle {
+                timeline_background: Some(Color::srgb(0.25, 0.7, 0.85)),
+                fret_border_color: Some(Color::srgb(0.2, 0.65, 0.8)),
+                fret_border_width: Some(2.0),
+                ..default()
+            },
+        );
+
+        styles.insert(
+            Techniques::PalmMute,
+            NoteVisualStyle {
+                timeline_background: Some(Color::srgb(0.35, 0.35, 0.35)),
+                fret_background: Some(Color::srgb(0.25, 0.25, 0.25)),
+                ..default()
+            },
+        );
+
         Self {
-            time_bits: note.time.to_bits(),
-            string_index: note.string_index,
-            fret: note.fret,
+            fallback: NoteVisualStyle::default(),
+            styles,
         }
     }
 }
@@ -202,7 +435,142 @@ fn setup_timeline_ui(
 
     commands.entity(block_stack).add_child(indicator);
 
+    let fret_area = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(FRET_VIEW_HEIGHT_PERCENT.max(0.0)),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(TIMELINE_HEIGHT_PERCENT),
+                padding: UiRect {
+                    left: Val::Px(48.0),
+                    right: Val::Px(48.0),
+                    top: Val::Px(16.0),
+                    bottom: Val::Px(24.0),
+                },
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.04, 0.07, 0.92)),
+        ))
+        .id();
+
+    let fret_root = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Stretch,
+                row_gap: Val::Px(12.0),
+                ..default()
+            },
+            FretViewRoot,
+        ))
+        .id();
+
+    let fret_neck = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(75.0),
+                position_type: PositionType::Relative,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Stretch,
+                padding: UiRect::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.21, 0.16, 0.12, 0.95)),
+            BorderColor::all(Color::srgba(0.12, 0.09, 0.07, 1.0)),
+            FretNeckNode,
+        ))
+        .id();
+
+    let fret_string_layer = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Stretch,
+                position_type: PositionType::Relative,
+                ..default()
+            },
+            FretStringLayerNode,
+            ZIndex(2),
+        ))
+        .id();
+
+    let fret_grid_layer = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(0.0),
+                ..default()
+            },
+            FretGridLayerNode,
+            ZIndex(1),
+        ))
+        .id();
+
+    let fret_marker_layer = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(0.0),
+                ..default()
+            },
+            FretMarkerLayerNode,
+            ZIndex(2),
+        ))
+        .id();
+
+    commands
+        .entity(fret_neck)
+        .add_child(fret_grid_layer)
+        .add_child(fret_string_layer)
+        .add_child(fret_marker_layer);
+
+    let fret_label_container = commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Auto,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .id();
+
+    let fret_label = commands
+        .spawn((
+            Text::new(""),
+            TextFont {
+                font_size: 18.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.9, 0.9, 0.95)),
+        ))
+        .id();
+
+    commands.entity(fret_label_container).add_child(fret_label);
+
+    commands
+        .entity(fret_root)
+        .add_child(fret_neck)
+        .add_child(fret_label_container);
+
+    commands.entity(fret_area).add_child(fret_root);
+
     commands.entity(root).add_child(timeline_area);
+    commands.entity(root).add_child(fret_area);
     commands
         .entity(timeline_area)
         .add_child(block_stack)
@@ -216,28 +584,64 @@ fn setup_timeline_ui(
     view.base_block_index = 0;
     view.string_colors = resolve_string_palette(&settings, &themes);
     view.shift_animation = None;
+    view.fret_area = Some(fret_area);
+    view.fret_neck = Some(fret_neck);
+    view.fret_grid_layer = Some(fret_grid_layer);
+    view.fret_marker_layer = Some(fret_marker_layer);
+    view.fret_string_layer = Some(fret_string_layer);
+    view.fret_label = Some(fret_label);
+    view.fret_string_lines.clear();
+    view.fret_fret_lines.clear();
+    view.fret_markers.clear();
+    view.fret_current_signature.clear();
+    view.fret_current_range = None;
+    view.fret_zoom_animation = None;
 }
 
 fn teardown_timeline_ui(mut commands: Commands, mut view: ResMut<StringTimelineView>) {
     if let Some(root) = view.root.take() {
         commands.entity(root).despawn();
     }
+    for entity in view.fret_string_lines.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    for (_, entity) in view.fret_markers.drain() {
+        commands.entity(entity).despawn();
+    }
+    for entity in view.fret_fret_lines.drain(..) {
+        commands.entity(entity).despawn();
+    }
     view.block_stack = None;
     view.indicator = None;
+    view.fret_area = None;
+    view.fret_neck = None;
+    view.fret_grid_layer = None;
+    view.fret_marker_layer = None;
+    view.fret_string_layer = None;
+    view.fret_label = None;
     view.blocks.clear();
     view.cached_string_count = 0;
     view.base_block_index = 0;
     view.string_colors.clear();
     view.shift_animation = None;
+    view.fret_string_lines.clear();
+    view.fret_markers.clear();
+    view.fret_fret_lines.clear();
+    view.fret_current_signature.clear();
+    view.fret_current_range = None;
+    view.fret_zoom_animation = None;
 }
 
 fn update_timeline(
     mut commands: Commands,
     time: Res<Time>,
     feed: Res<StringTimelineFeed>,
+    technique_registry: Res<TechniqueVisualizationRegistry>,
     mut view: ResMut<StringTimelineView>,
     mut node_query: Query<&mut Node>,
     mut background_query: Query<&mut BackgroundColor>,
+    mut text_query: Query<&mut Text>,
+    mut transform_query: Query<&mut Transform>,
     computed_query: Query<&ComputedNode>,
 ) {
     let Some(block_stack) = view.block_stack else {
@@ -253,85 +657,107 @@ fn update_timeline(
         &mut background_query,
     );
 
-    if feed.string_count == 0 {
+    let string_count_zero = feed.string_count == 0;
+
+    if string_count_zero {
         clear_all_blocks(&mut commands, &mut view);
         reset_indicator(&view, &mut node_query);
-        return;
-    }
-
-    if feed.string_count != view.cached_string_count {
-        clear_all_blocks(&mut commands, &mut view);
-        view.cached_string_count = feed.string_count;
-    }
-
-    let block_duration = TIMELINE_BLOCK_DURATION;
-    let current_block_index = (feed.current_time / block_duration).floor().max(0.0) as i32;
-    let block_progress = ((feed.current_time - current_block_index as f32 * block_duration)
-        / block_duration)
-        .clamp(0.0, 1.0);
-
-    if view.blocks.is_empty() {
-        view.base_block_index = current_block_index;
-    }
-
-    if current_block_index < view.base_block_index && view.shift_animation.is_none() {
-        view.base_block_index = current_block_index;
-    }
-
-    if view.shift_animation.is_none() {
-        let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
-        let last_block_index = view.base_block_index + visible_blocks - 1;
-        let threshold_block = view.base_block_index + (visible_blocks - 2).max(0);
-        let mut desired_base = view.base_block_index;
-
-        if current_block_index > last_block_index {
-            desired_base = current_block_index - (visible_blocks - 1);
-        } else if current_block_index >= threshold_block && block_progress >= 0.95 {
-            desired_base = (view.base_block_index + 1).max(0);
+    } else {
+        if feed.string_count != view.cached_string_count {
+            clear_all_blocks(&mut commands, &mut view);
+            view.cached_string_count = feed.string_count;
         }
 
-        if desired_base > view.base_block_index {
-            let started = start_shift_animation(
-                &mut view,
-                desired_base,
-                &mut node_query,
-                &mut background_query,
-                &computed_query,
-            );
-            if !started {
+        let block_duration = TIMELINE_BLOCK_DURATION;
+        let current_block_index = (feed.current_time / block_duration).floor().max(0.0) as i32;
+        let block_progress = ((feed.current_time - current_block_index as f32 * block_duration)
+            / block_duration)
+            .clamp(0.0, 1.0);
+
+        if view.blocks.is_empty() {
+            view.base_block_index = current_block_index;
+        }
+
+        if current_block_index < view.base_block_index && view.shift_animation.is_none() {
+            view.base_block_index = current_block_index;
+        }
+
+        if view.shift_animation.is_none() {
+            let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
+            let last_block_index = view.base_block_index + visible_blocks - 1;
+            let threshold_block = view.base_block_index + (visible_blocks - 2).max(0);
+            let mut desired_base = view.base_block_index;
+
+            if current_block_index > last_block_index {
+                desired_base = current_block_index - (visible_blocks - 1);
+            } else if current_block_index >= threshold_block && block_progress >= 0.95 {
+                desired_base = (view.base_block_index + 1).max(0);
+            }
+
+            if desired_base > view.base_block_index {
+                let started = start_shift_animation(
+                    &mut view,
+                    desired_base,
+                    &mut node_query,
+                    &mut background_query,
+                    &computed_query,
+                );
+                if !started {
+                    view.base_block_index = desired_base;
+                }
+            } else {
                 view.base_block_index = desired_base;
             }
-        } else {
-            view.base_block_index = desired_base;
-        }
-    } else if view.shift_animation.is_some() {
-        let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
-        let last_block_index = view.base_block_index + visible_blocks - 1;
-        if current_block_index > last_block_index {
-            if let Some(animation) = view.shift_animation.as_mut() {
-                animation.target_base_index =
-                    (current_block_index - (visible_blocks - 1)).max(animation.target_base_index);
+        } else if view.shift_animation.is_some() {
+            let visible_blocks = VISIBLE_BLOCKS.max(1) as i32;
+            let last_block_index = view.base_block_index + visible_blocks - 1;
+            if current_block_index > last_block_index {
+                if let Some(animation) = view.shift_animation.as_mut() {
+                    animation.target_base_index = (current_block_index - (visible_blocks - 1))
+                        .max(animation.target_base_index);
+                }
             }
         }
+
+        ensure_blocks(&mut commands, &mut view, block_stack, feed.string_count);
+
+        render_notes(
+            &mut commands,
+            &mut view,
+            &feed,
+            current_block_index,
+            technique_registry.as_ref(),
+        );
+        let view_ref: &StringTimelineView = &view;
+        update_overlays(
+            view_ref,
+            current_block_index,
+            block_progress,
+            &mut node_query,
+        );
+        update_indicator(
+            &mut commands,
+            view_ref,
+            current_block_index,
+            block_progress,
+            &mut node_query,
+        );
     }
 
-    ensure_blocks(&mut commands, &mut view, block_stack, feed.string_count);
-
-    render_notes(&mut commands, &mut view, &feed, current_block_index);
-    let view_ref: &StringTimelineView = &view;
-    update_overlays(
-        view_ref,
-        current_block_index,
-        block_progress,
-        &mut node_query,
-    );
-    update_indicator(
+    update_fret_view(
         &mut commands,
-        view_ref,
-        current_block_index,
-        block_progress,
+        &mut view,
+        &feed,
+        technique_registry.as_ref(),
+        delta_seconds,
         &mut node_query,
+        &mut text_query,
+        &mut transform_query,
     );
+
+    if string_count_zero {
+        return;
+    }
 }
 
 fn start_shift_animation(
@@ -664,6 +1090,7 @@ fn render_notes(
     view: &mut StringTimelineView,
     feed: &StringTimelineFeed,
     current_block_index: i32,
+    technique_registry: &TechniqueVisualizationRegistry,
 ) {
     let block_duration = TIMELINE_BLOCK_DURATION;
     let string_colors = view.string_colors.clone();
@@ -715,32 +1142,47 @@ fn render_notes(
                 } else {
                     string_colors[string_idx % string_colors.len()]
                 };
-                let note_color = palette_color;
+                let style = technique_registry.style_for(&note.techniques);
+                let note_color = style.timeline_background.unwrap_or(palette_color);
+                let border_width = style
+                    .timeline_border_width
+                    .or_else(|| style.timeline_border_color.map(|_| 2.0))
+                    .unwrap_or(0.0);
+                let border_color = style.timeline_border_color.unwrap_or(note_color);
 
-                let note_entity = commands
-                    .spawn((
-                        Node {
-                            width: Val::Px(NOTE_DIAMETER_PX),
-                            height: Val::Px(NOTE_DIAMETER_PX),
-                            position_type: PositionType::Absolute,
-                            left: Val::Percent(left_percent.min(100.0)),
-                            top: Val::Percent(50.0),
-                            margin: UiRect {
-                                left: Val::Px(-(NOTE_DIAMETER_PX / 2.0)),
-                                right: Val::Px(0.0),
-                                top: Val::Px(-(NOTE_DIAMETER_PX / 2.0)),
-                                bottom: Val::Px(0.0),
-                            },
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        BackgroundColor(note_color),
-                        BorderRadius::all(Val::Px(NOTE_DIAMETER_PX / 2.0)),
-                    ))
-                    .id();
+                let mut node = Node {
+                    width: Val::Px(NOTE_DIAMETER_PX),
+                    height: Val::Px(NOTE_DIAMETER_PX),
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(left_percent.min(100.0)),
+                    top: Val::Percent(50.0),
+                    margin: UiRect {
+                        left: Val::Px(-(NOTE_DIAMETER_PX / 2.0)),
+                        right: Val::Px(0.0),
+                        top: Val::Px(-(NOTE_DIAMETER_PX / 2.0)),
+                        bottom: Val::Px(0.0),
+                    },
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                };
+                if border_width > 0.0 {
+                    node.border = UiRect::all(Val::Px(border_width));
+                }
 
-                commands.entity(note_entity).with_children(|parent| {
+                let mut note_commands = commands.spawn((
+                    node,
+                    BackgroundColor(note_color),
+                    BorderRadius::all(Val::Px(NOTE_DIAMETER_PX / 2.0)),
+                ));
+
+                if border_width > 0.0 {
+                    note_commands.insert(BorderColor::all(border_color));
+                }
+
+                let note_entity = note_commands.id();
+
+                note_commands.with_children(|parent| {
                     parent.spawn((
                         Text::new(note.fret.to_string()),
                         TextFont {
@@ -772,6 +1214,448 @@ fn render_notes(
             }
         }
     }
+}
+
+fn update_fret_view(
+    commands: &mut Commands,
+    view: &mut StringTimelineView,
+    feed: &StringTimelineFeed,
+    technique_registry: &TechniqueVisualizationRegistry,
+    delta_seconds: f32,
+    node_query: &mut Query<&mut Node>,
+    text_query: &mut Query<&mut Text>,
+    transform_query: &mut Query<&mut Transform>,
+) {
+    let (Some(fret_neck), Some(grid_layer), Some(marker_layer), Some(string_layer)) = (
+        view.fret_neck,
+        view.fret_grid_layer,
+        view.fret_marker_layer,
+        view.fret_string_layer,
+    ) else {
+        return;
+    };
+
+    ensure_fret_strings(commands, view, string_layer, feed.string_count);
+
+    let active_notes = collect_active_notes(feed);
+
+    if active_notes.is_empty() {
+        clear_fret_markers(commands, view);
+        clear_fret_grid(commands, view);
+        update_fret_label(view, text_query, "");
+        if !view.fret_current_signature.is_empty() {
+            view.fret_current_signature.clear();
+        }
+        view.fret_current_range = None;
+        progress_fret_zoom_animation(view, delta_seconds, transform_query);
+        return;
+    }
+
+    let mut new_signature: Vec<NoteKey> =
+        active_notes.iter().map(|note| NoteKey::new(note)).collect();
+    new_signature.sort_by(|a, b| {
+        a.string_index
+            .cmp(&b.string_index)
+            .then(a.fret.cmp(&b.fret))
+            .then(a.metadata_hash.cmp(&b.metadata_hash))
+    });
+
+    if new_signature != view.fret_current_signature {
+        view.fret_current_signature = new_signature.clone();
+        view.fret_zoom_animation = Some(FretZoomAnimation::new(
+            FRET_ZOOM_START_SCALE,
+            1.0,
+            FRET_ZOOM_DURATION,
+        ));
+        if let Ok(mut transform) = transform_query.get_mut(fret_neck) {
+            transform.scale = Vec3::splat(FRET_ZOOM_START_SCALE);
+        }
+    }
+
+    let Some(range) = compute_fret_range(&active_notes) else {
+        clear_fret_markers(commands, view);
+        clear_fret_grid(commands, view);
+        if !view.fret_current_signature.is_empty() {
+            view.fret_current_signature.clear();
+        }
+        update_fret_label(view, text_query, "");
+        view.fret_current_range = None;
+        progress_fret_zoom_animation(view, delta_seconds, transform_query);
+        return;
+    };
+
+    if view.fret_current_range != Some(range) {
+        view.fret_current_range = Some(range);
+    }
+
+    clear_fret_markers(commands, view);
+    ensure_fret_grid(commands, view, grid_layer, &range, node_query);
+
+    let mut occupied = HashSet::new();
+    let string_colors = view.string_colors.clone();
+
+    for note in &active_notes {
+        if note.string_index >= feed.string_count {
+            continue;
+        }
+
+        let mut maybe_spawn_marker = |fret_value: i32, role: FretMarkerRole, primary: bool| {
+            if fret_value < 0 {
+                return;
+            }
+            if !occupied.insert((note.string_index, fret_value, primary)) {
+                return;
+            }
+
+            let key = match role {
+                FretMarkerRole::Primary => FretMarkerKey::primary(note),
+                FretMarkerRole::Additional(extra) => FretMarkerKey::additional(note, extra),
+            };
+
+            let palette_color = if string_colors.is_empty() {
+                Color::srgb(0.55, 0.75, 0.95)
+            } else {
+                string_colors[note.string_index % string_colors.len()]
+            };
+
+            let style = technique_registry.style_for(&note.techniques);
+            let marker_color = style.fret_background.unwrap_or(palette_color);
+            let diameter = if primary {
+                FRET_MARKER_DIAMETER_PX
+            } else {
+                FRET_MARKER_DIAMETER_PX * FRET_MARKER_SECONDARY_SCALE
+            };
+            let border_width = style
+                .fret_border_width
+                .or_else(|| {
+                    style
+                        .fret_border_color
+                        .map(|_| if primary { 2.0 } else { 1.5 })
+                })
+                .unwrap_or(if primary { 2.0 } else { 1.5 });
+            let border_color = style
+                .fret_border_color
+                .unwrap_or(Color::srgb(0.95, 0.95, 0.98));
+
+            let left_percent = fret_left_percent(fret_value, &range);
+            let top_percent = string_position_percent(note.string_index, feed.string_count);
+
+            let mut node = Node {
+                width: Val::Px(diameter),
+                height: Val::Px(diameter),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(left_percent.clamp(0.0, 100.0)),
+                top: Val::Percent(top_percent.clamp(0.0, 100.0)),
+                margin: UiRect {
+                    left: Val::Px(-(diameter / 2.0)),
+                    right: Val::Px(0.0),
+                    top: Val::Px(-(diameter / 2.0)),
+                    bottom: Val::Px(0.0),
+                },
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            };
+            if border_width > 0.0 {
+                node.border = UiRect::all(Val::Px(border_width));
+            }
+
+            let mut marker_commands = commands.spawn((
+                node,
+                BackgroundColor(marker_color),
+                BorderRadius::all(Val::Px(diameter / 2.0)),
+                FretMarker,
+                ZIndex(3),
+            ));
+
+            if border_width > 0.0 {
+                marker_commands.insert(BorderColor::all(border_color));
+            }
+
+            let marker_entity = marker_commands.id();
+
+            commands.entity(marker_layer).add_child(marker_entity);
+            view.fret_markers.insert(key, marker_entity);
+        };
+
+        maybe_spawn_marker(note.fret, FretMarkerRole::Primary, true);
+
+        for extra in &note.additional_frets {
+            maybe_spawn_marker(*extra, FretMarkerRole::Additional(*extra), false);
+        }
+    }
+
+    let label_text = if range.start == range.end {
+        format!("Fret {}", range.start)
+    } else {
+        format!("Frets {} - {}", range.start, range.end)
+    };
+    update_fret_label(view, text_query, &label_text);
+
+    progress_fret_zoom_animation(view, delta_seconds, transform_query);
+}
+
+fn ensure_fret_strings(
+    commands: &mut Commands,
+    view: &mut StringTimelineView,
+    string_layer: Entity,
+    string_count: usize,
+) {
+    if view.fret_string_lines.len() == string_count {
+        return;
+    }
+
+    for entity in view.fret_string_lines.drain(..) {
+        commands.entity(entity).despawn();
+    }
+
+    if string_count == 0 {
+        return;
+    }
+
+    let string_colors = view.string_colors.clone();
+
+    for string_index in 0..string_count {
+        let base_color = if string_colors.is_empty() {
+            Color::srgb(0.75, 0.75, 0.78)
+        } else {
+            string_colors[string_index % string_colors.len()]
+        };
+
+        let top_percent = string_position_percent(string_index, string_count).clamp(0.0, 100.0);
+        let line_entity = commands
+            .spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(2.0),
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(0.0),
+                    top: Val::Percent(top_percent),
+                    margin: UiRect {
+                        left: Val::Px(0.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(-1.0),
+                        bottom: Val::Px(0.0),
+                    },
+                    ..default()
+                },
+                BackgroundColor(base_color.with_alpha(0.55)),
+                ZIndex(2),
+            ))
+            .id();
+
+        commands.entity(string_layer).add_child(line_entity);
+        view.fret_string_lines.push(line_entity);
+    }
+}
+
+fn ensure_fret_grid(
+    commands: &mut Commands,
+    view: &mut StringTimelineView,
+    grid_layer: Entity,
+    range: &FretRange,
+    node_query: &mut Query<&mut Node>,
+) {
+    let span = range.span();
+    let required_lines = span + 1;
+    if view.fret_fret_lines.len() != required_lines {
+        clear_fret_grid(commands, view);
+        view.fret_fret_lines.reserve(required_lines);
+        let span_value = span.max(1) as f32;
+        for i in 0..=span {
+            let line_width = if i == 0 { 4.0 } else { 2.0 };
+            let left_percent = (i as f32 / span_value) * 100.0;
+            let margin_left = if i == 0 {
+                0.0
+            } else if i == span {
+                -line_width
+            } else {
+                -(line_width * 0.5)
+            };
+
+            let line_entity = commands
+                .spawn((
+                    Node {
+                        width: Val::Px(line_width),
+                        height: Val::Percent(100.0),
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(left_percent.clamp(0.0, 100.0)),
+                        top: Val::Percent(0.0),
+                        margin: UiRect {
+                            left: Val::Px(margin_left),
+                            right: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            bottom: Val::Px(0.0),
+                        },
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(
+                        if i == 0 { 0.95 } else { 0.85 },
+                        if i == 0 { 0.95 } else { 0.85 },
+                        if i == 0 { 0.98 } else { 0.92 },
+                        if i == 0 { 0.8 } else { 0.55 },
+                    )),
+                    ZIndex(1),
+                ))
+                .id();
+
+            commands.entity(grid_layer).add_child(line_entity);
+            view.fret_fret_lines.push(line_entity);
+        }
+    } else {
+        let span_value = span.max(1) as f32;
+        for (i, entity) in view.fret_fret_lines.iter().enumerate() {
+            if let Ok(mut node) = node_query.get_mut(*entity) {
+                let line_width = if i == 0 { 4.0 } else { 2.0 };
+                let left_percent = (i as f32 / span_value) * 100.0;
+                let margin_left = if i == 0 {
+                    0.0
+                } else if i == span {
+                    -line_width
+                } else {
+                    -(line_width * 0.5)
+                };
+                node.width = Val::Px(line_width);
+                node.left = Val::Percent(left_percent.clamp(0.0, 100.0));
+                node.margin.left = Val::Px(margin_left);
+            }
+        }
+    }
+}
+
+fn clear_fret_grid(commands: &mut Commands, view: &mut StringTimelineView) {
+    for entity in view.fret_fret_lines.drain(..) {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn collect_active_notes<'a>(feed: &'a StringTimelineFeed) -> Vec<&'a TimelineNote> {
+    if feed.notes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut active: Vec<&TimelineNote> = feed
+        .notes
+        .iter()
+        .filter(|note| {
+            let start = note.time;
+            let end = note.time + note.sustain.max(0.0);
+            feed.current_time + NOTE_GROUP_TOLERANCE >= start
+                && feed.current_time <= end + NOTE_GROUP_TOLERANCE
+        })
+        .collect();
+
+    if !active.is_empty() {
+        let min_time = active.iter().map(|note| note.time).fold(f32::MAX, f32::min);
+        active.retain(|note| (note.time - min_time).abs() <= NOTE_GROUP_TOLERANCE);
+        return active;
+    }
+
+    let next_time = feed
+        .notes
+        .iter()
+        .filter(|note| note.time + NOTE_GROUP_TOLERANCE >= feed.current_time)
+        .map(|note| note.time)
+        .fold(None, |acc: Option<f32>, time| match acc {
+            Some(existing) => Some(existing.min(time)),
+            None => Some(time),
+        });
+
+    let Some(target_time) = next_time else {
+        return Vec::new();
+    };
+
+    feed.notes
+        .iter()
+        .filter(|note| (note.time - target_time).abs() <= NOTE_GROUP_TOLERANCE)
+        .collect()
+}
+
+fn compute_fret_range(notes: &[&TimelineNote]) -> Option<FretRange> {
+    let mut min_fret = i32::MAX;
+    let mut max_fret = i32::MIN;
+
+    for note in notes {
+        if note.fret >= 0 {
+            min_fret = min_fret.min(note.fret);
+            max_fret = max_fret.max(note.fret);
+        }
+        for extra in &note.additional_frets {
+            if *extra >= 0 {
+                min_fret = min_fret.min(*extra);
+                max_fret = max_fret.max(*extra);
+            }
+        }
+    }
+
+    if min_fret == i32::MAX {
+        return None;
+    }
+
+    Some(FretRange::new(min_fret, max_fret))
+}
+
+fn clear_fret_markers(commands: &mut Commands, view: &mut StringTimelineView) {
+    for (_, entity) in view.fret_markers.drain() {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn update_fret_label(view: &StringTimelineView, text_query: &mut Query<&mut Text>, content: &str) {
+    let Some(label_entity) = view.fret_label else {
+        return;
+    };
+
+    if let Ok(mut text) = text_query.get_mut(label_entity) {
+        *text = Text::new(content.to_string());
+    }
+}
+
+fn string_position_percent(string_index: usize, string_count: usize) -> f32 {
+    if string_count <= 1 {
+        50.0
+    } else {
+        (string_index as f32 / (string_count - 1) as f32) * 100.0
+    }
+}
+
+fn fret_left_percent(fret: i32, range: &FretRange) -> f32 {
+    let span = range.span() as f32;
+    if span <= f32::EPSILON {
+        50.0
+    } else {
+        ((fret - range.start) as f32 + 0.5) / span * 100.0
+    }
+}
+
+fn progress_fret_zoom_animation(
+    view: &mut StringTimelineView,
+    delta_seconds: f32,
+    transform_query: &mut Query<&mut Transform>,
+) {
+    let Some(fret_neck) = view.fret_neck else {
+        return;
+    };
+
+    if let Some(animation) = view.fret_zoom_animation.as_mut() {
+        animation.elapsed += delta_seconds;
+        let progress = (animation.elapsed / animation.duration).clamp(0.0, 1.0);
+        let eased = ease_out_quad(progress);
+        let scale =
+            animation.start_scale + (animation.target_scale - animation.start_scale) * eased;
+        if let Ok(mut transform) = transform_query.get_mut(fret_neck) {
+            transform.scale = Vec3::splat(scale);
+        }
+        if progress >= 1.0 {
+            view.fret_zoom_animation = None;
+        }
+    } else if let Ok(mut transform) = transform_query.get_mut(fret_neck) {
+        transform.scale = Vec3::splat(1.0);
+    }
+}
+
+fn ease_out_quad(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(2)
 }
 
 fn update_overlays(

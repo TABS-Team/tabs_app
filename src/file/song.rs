@@ -104,7 +104,7 @@ pub struct SongMetadata {
     pub arrangements: HashMap<String, SongArrangementMetadata>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 pub enum Techniques {
     Slide,
     Bend,
