@@ -1,14 +1,4 @@
-use bevy::{
-    asset::RenderAssetUsages,
-    input::keyboard::KeyboardInput,
-    input_focus::FocusedInput,
-    math::FloatOrd,
-    prelude::*,
-    render::{
-        camera::{ImageRenderTarget, RenderTarget},
-        render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-    },
-};
+use bevy::prelude::*;
 
 use std::path::Path;
 
@@ -47,10 +37,9 @@ pub struct SongList;
 
 pub fn setup_song_select(mut commands: Commands, ctx: UiContext) {
     let root_dir = Path::new(&ctx.config.paths.song_directory);
-    let song_paths = Song::get_all_songs(root_dir);
-    let song_handles: Vec<Handle<Song>> = song_paths
-        .iter()
-        .map(|path| ctx.asset_server.load(path.as_path()))
+    let song_handles: Vec<Handle<Song>> = Song::get_all_songs(root_dir)
+        .into_iter()
+        .map(|path| ctx.asset_server.load(path))
         .collect();
 
     commands.insert_resource(SongHandles {
@@ -148,10 +137,10 @@ fn build_song_ui(
                                     handle: handle.clone(),
                                 })
                                 .observe(
-                                    |trigger: Trigger<Pointer<Over>>,
+                                    |trigger: On<Pointer<Over>>,
                                      mut cmds: Commands,
                                      ctx: UiContext| {
-                                        let e = trigger.target();
+                                        let e = trigger.entity;
                                         let theme =
                                             ctx.themes.get(&ctx.settings.start_theme).unwrap();
                                         cmds.entity(e).insert(BoxShadow::new(
@@ -163,18 +152,18 @@ fn build_song_ui(
                                         ));
                                     },
                                 )
-                                .observe(|trigger: Trigger<Pointer<Out>>, mut cmds: Commands| {
-                                    let e = trigger.target();
+                                .observe(|trigger: On<Pointer<Out>>, mut cmds: Commands| {
+                                    let e = trigger.entity;
                                     cmds.entity(e).remove::<BoxShadow>();
                                 })
                                 .observe({
                                     |
-                                        trigger: Trigger<Pointer<Pressed>>,
+                                        trigger: On<Pointer<Press>>,
                                         mut cmds: Commands,
                                         song_handle: Query<&SongHandle>,
                                         mut next_state: ResMut<NextState<AppState>>
                                     | {
-                                        let e = trigger.target();
+                                        let e = trigger.entity;
                                         if let Ok(song_handle) = song_handle.get(e) {
                                             cmds.insert_resource(SongSelectState {
                                                 selected_song: Some(song_handle.handle.clone()),
@@ -192,12 +181,12 @@ fn build_song_ui(
 
 pub fn setup_song_preview(
     mut commands: Commands,
-    state: Res<State<AppState>>,
-    asset_server: Res<AssetServer>,
+    _state: Res<State<AppState>>,
+    _asset_server: Res<AssetServer>,
     songs: Res<Assets<Song>>,
     mut next_state: ResMut<NextState<AppState>>,
     selected_song: Res<SongSelectState>,
-    mut blur_materials: ResMut<Assets<BlurMaterial>>,
+    _blur_materials: ResMut<Assets<BlurMaterial>>,
     main_camera: Res<MainCamera>,
     ctx: UiContext,
 ) {
@@ -362,10 +351,10 @@ pub fn setup_song_preview(
                                         .spawn(details, &ctx);
 
                                         details.commands().entity(instrument_selection_ent).observe(
-                                            |trigger: Trigger<SelectedEvent>,
+                                            |trigger: On<SelectedEvent>,
                                              mut selected_song: ResMut<SongSelectState>| {
                                             if trigger.event().selected {
-                                                let mut instrument_id = trigger.event().id.clone();
+                                                let instrument_id = trigger.event().id.clone();
                                                 let file_name: String = instrument_id
                                                     .chars()
                                                     .filter(|c| !c.is_whitespace())
@@ -403,7 +392,7 @@ pub fn setup_song_preview(
                                                 .spawn(btn_spawner, &ctx);
 
                                                 btn_spawner.commands().entity(play_btn).observe(
-                                                    |trigger: Trigger<Pointer<Click>>, mut next_state: ResMut<NextState<AppState>>|
+                                                    |_: On<Pointer<Click>>, mut next_state: ResMut<NextState<AppState>>|
                                                     {
                                                         next_state.set(AppState::Gameplay);
 
@@ -429,7 +418,7 @@ pub fn cleanup_song_preview(
     mut commands: Commands,
     song_preview_entities: Query<(Entity, &SongPreview)>,
 ) {
-    for (entity, comp) in &song_preview_entities {
+    for (entity, _comp) in &song_preview_entities {
         commands.entity(entity).despawn();
     }
 }
@@ -438,7 +427,7 @@ pub fn transition_preview_to_gameplay(
     mut commands: Commands,
     song_list_entities: Query<(Entity, &SongList)>,
 ) {
-    for (entity, comp) in &song_list_entities {
+    for (entity, _comp) in &song_list_entities {
         commands.entity(entity).despawn();
     }
 }

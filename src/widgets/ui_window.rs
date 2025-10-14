@@ -1,12 +1,13 @@
+use bevy::picking::prelude::{Click, Drag, DragEnd, DragStart, Out, Over, Pointer, Press};
 use bevy::{
+    camera::RenderTarget,
     ecs::observer::ObservedBy,
     prelude::*,
-    render::camera::RenderTarget,
-    ui::{BackgroundColor, BorderColor},
-    window::{PrimaryWindow, SystemCursorIcon, WindowRef},
-    winit::{cursor::CursorIcon, WinitWindows},
+    ui::{BackgroundColor, BorderColor, ComputedNode},
+    window::{CursorIcon, PrimaryWindow, SystemCursorIcon, Window, WindowRef, WindowResolution},
+    winit::WINIT_WINDOWS,
 };
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::PhysicalPosition;
 
 use crate::widgets::{UiContext, UiLayer, UiLayerStack};
 
@@ -16,8 +17,8 @@ pub struct UiWindowPlugin;
 
 impl Plugin for UiWindowPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<PromoteToOsWindowEvent>()
-            .add_systems(Update, detect_os_window_reentry);
+        app.add_systems(Update, detect_os_window_reentry)
+            .add_systems(PostUpdate, detect_os_window_promotion);
     }
 }
 
@@ -54,12 +55,6 @@ pub struct ResizeCorner {
 
 #[derive(Component)]
 pub struct Footer;
-
-#[derive(Event)]
-pub struct PromoteToOsWindowEvent {
-    pub window_entity: Entity,
-    pub window_title: String,
-}
 
 #[derive(Component, Clone)]
 pub struct UiWindow {
@@ -228,7 +223,7 @@ impl UiWindow {
                 ..default()
             },
             background: BackgroundColor(self.style.background_color),
-            border: BorderColor(self.style.border_color),
+            border: BorderColor::all(self.style.border_color),
             transform: Transform::default(),
             global_transform: GlobalTransform::default(),
         }
@@ -308,12 +303,12 @@ impl UiWindow {
 
     fn register_observers(entity: Entity, commands: &mut Commands) {
         commands.entity(entity).observe(
-            |trigger: Trigger<Pointer<Pressed>>,
+            |trigger: On<Pointer<Press>>,
              mut commands: Commands,
              mut stack: ResMut<UiLayerStack>,
              layers: Query<&WindowLayer>| {
-                if let Ok(WindowLayer(layer)) = layers.get(trigger.target()) {
-                    stack.bring_to_front(*layer, trigger.target(), &mut commands);
+                if let Ok(WindowLayer(layer)) = layers.get(trigger.entity) {
+                    stack.bring_to_front(*layer, trigger.entity, &mut commands);
                 }
             },
         );
@@ -328,8 +323,8 @@ impl UiWindow {
         footer_query: &Query<&Footer>,
         computed_node_query: &Query<&ComputedNode>,
         node_query: &mut Query<&mut Node>,
-        winit_windows: &NonSend<WinitWindows>,
         primary_window_entity: Entity,
+        primary_window: &Window,
     ) {
         let Ok(children) = children_query.get(window_entity) else {
             return;
@@ -371,11 +366,13 @@ impl UiWindow {
             .map(|t| t.title.clone())
             .unwrap_or("Untitled".into());
 
-        let Some(primary_window) = winit_windows.get_window(primary_window_entity) else {
-            return;
-        };
-        let primary_position = primary_window
-            .outer_position()
+        let scale = primary_window.scale_factor();
+        let primary_position = WINIT_WINDOWS
+            .with_borrow(|winit_windows| {
+                winit_windows
+                    .get_window(primary_window_entity)
+                    .and_then(|window| window.outer_position().ok())
+            })
             .unwrap_or(PhysicalPosition { x: 0, y: 0 });
 
         let Ok(node) = node_query.get(window_entity) else {
@@ -385,33 +382,37 @@ impl UiWindow {
             return;
         };
 
-        let PhysicalSize {
-            width: screen_w,
-            height: screen_h,
-        } = primary_window.inner_size();
-        let screen_w = screen_w as f32;
-        let screen_h = screen_h as f32;
+        let screen_w = primary_window.physical_width() as f32;
+        let screen_h = primary_window.physical_height() as f32;
+        let left_phys = left * scale;
+        let top_phys = top * scale;
+        let spawn_margin = (SPAWNMARGIN as f32 * scale).round() as i32;
 
-        let mut spawn_x = primary_position.x + (left as i32);
-        let mut spawn_y = primary_position.y + (top as i32);
+        let mut spawn_x = primary_position.x + left_phys.round() as i32;
+        let mut spawn_y = primary_position.y + top_phys.round() as i32;
 
-        if left < 0.0 {
-            spawn_x -= (size.size.x as i32) + SPAWNMARGIN;
-        } else if left + size.size.x > screen_w {
-            spawn_x += SPAWNMARGIN;
+        if left_phys < 0.0 {
+            spawn_x -= (size.size.x.round() as i32) + spawn_margin;
+        } else if left_phys + size.size.x > screen_w {
+            spawn_x += spawn_margin;
         }
 
-        if top < 0.0 {
-            spawn_y -= (size.size.y as i32) + SPAWNMARGIN;
-        } else if top + size.size.y > screen_h {
-            spawn_y += SPAWNMARGIN;
+        if top_phys < 0.0 {
+            spawn_y -= (size.size.y.round() as i32) + spawn_margin;
+        } else if top_phys + size.size.y > screen_h {
+            spawn_y += spawn_margin;
         }
 
         let new_window_position = IVec2::new(spawn_x, spawn_y);
 
+        let resolution = WindowResolution::new(
+            size.size.x.max(1.0).round() as u32,
+            size.size.y.max(1.0).round() as u32,
+        );
+
         let new_window_entity = commands
             .spawn(Window {
-                resolution: (size.size.x, size.size.y).into(),
+                resolution,
                 title,
                 position: WindowPosition::At(new_window_position),
                 decorations: true,
@@ -447,7 +448,6 @@ impl UiWindow {
     fn revert_to_ui_window(
         os_window_entity: Entity,
         commands: &mut Commands,
-        winit_windows: &NonSend<WinitWindows>,
         children_query: &Query<&Children>,
         os_window_query: &Query<&OsWindow>,
         ui_window_query: &Query<&UiWindow>,
@@ -483,20 +483,27 @@ impl UiWindow {
             }
         }
 
-        let Some(winit_window) = winit_windows.get_window(os_window_entity) else {
-            return;
-        };
-        let size: PhysicalSize<u32> = winit_window.outer_size();
-        let Ok(position): Result<PhysicalPosition<i32>, _> = winit_window.outer_position() else {
+        let Some((size, position, primary_pos, scale, primary_inner_size)) = WINIT_WINDOWS
+            .with_borrow(|winit_windows| {
+                let os_window = winit_windows.get_window(os_window_entity)?;
+                let primary_wnd = winit_windows.get_window(primary_window_entity)?;
+                let position = os_window.outer_position().ok()?;
+                let primary_pos = primary_wnd.outer_position().ok()?;
+                let scale = primary_wnd.scale_factor() as f32;
+                let inner_size = primary_wnd.inner_size();
+                Some((
+                    os_window.outer_size(),
+                    position,
+                    primary_pos,
+                    scale,
+                    inner_size,
+                ))
+            })
+        else {
             return;
         };
 
         if let Ok(mut window_node) = node_query.get_mut(window_entity) {
-            let primary_wnd = winit_windows
-                .get_window(primary_window_entity)
-                .expect("Primary OS window not found");
-            let primary_pos = primary_wnd.outer_position().unwrap();
-            let scale = primary_wnd.scale_factor() as f32;
             let ui_x = ((position.x - primary_pos.x) as f32) / scale;
             let ui_y = ((position.y - primary_pos.y) as f32) / scale;
 
@@ -509,13 +516,13 @@ impl UiWindow {
             const SPAWNMARGIN: f32 = 10.0;
 
             let from_top = ui_y + ui_h * 0.5 < 0.0;
-            let from_bottom = ui_y + ui_h * 0.5 > (primary_wnd.inner_size().height as f32) / scale;
+            let from_bottom = ui_y + ui_h * 0.5 > (primary_inner_size.height as f32) / scale;
             let from_left = ui_x + ui_w * 0.5 < 0.0;
-            let from_right = ui_x + ui_w * 0.5 > (primary_wnd.inner_size().width as f32) / scale;
+            let from_right = ui_x + ui_w * 0.5 > (primary_inner_size.width as f32) / scale;
             let final_x = if from_left {
                 SPAWNMARGIN
             } else if from_right {
-                (primary_wnd.inner_size().width as f32) / scale - ui_w - SPAWNMARGIN
+                (primary_inner_size.width as f32) / scale - ui_w - SPAWNMARGIN
             } else {
                 ui_x
             };
@@ -523,7 +530,7 @@ impl UiWindow {
             let final_y = if from_top {
                 SPAWNMARGIN
             } else if from_bottom {
-                (primary_wnd.inner_size().height as f32) / scale - ui_h - SPAWNMARGIN
+                (primary_inner_size.height as f32) / scale - ui_h - SPAWNMARGIN
             } else {
                 ui_y
             };
@@ -606,7 +613,7 @@ impl Titlebar {
         commands
             .entity(entity)
             .observe(
-                move |trigger: Trigger<Pointer<Drag>>,
+                move |trigger: On<Pointer<Drag>>,
                       title_bars: Query<&Titlebar>,
                       mut nodes: Query<&mut Node>,
                       mut commands: Commands,
@@ -615,35 +622,35 @@ impl Titlebar {
                       titlebar_query: Query<&Titlebar>,
                       footer_query: Query<&Footer>,
                       computed_node_query: Query<&ComputedNode>,
-                      winit_windows: NonSend<WinitWindows>,
-                      primary_window: Query<Entity, With<PrimaryWindow>>| {
+                      primary_window: Query<(Entity, &Window), With<PrimaryWindow>>| {
                     let drag = trigger.event();
-                    let Ok(title_bar) = title_bars.get(trigger.target()) else {
+                    let Ok(title_bar) = title_bars.get(trigger.entity) else {
                         return;
                     };
                     let window_entity = title_bar.window_entity;
 
                     if let Ok(mut node) = nodes.get_mut(window_entity) {
+                        let Ok((primary_entity, primary_window)) = primary_window.single()
+                        else {
+                            return;
+                        };
+
+                        let scale = primary_window.scale_factor();
+                        let screen_w = primary_window.resolution.width();
+                        let screen_h = primary_window.resolution.height();
+
+                        let logical_delta = drag.delta / scale;
+
                         if let Val::Px(ref mut left) = node.left {
-                            *left += drag.delta.x;
+                            *left += logical_delta.x;
                         }
                         if let Val::Px(ref mut top) = node.top {
-                            *top += drag.delta.y;
+                            *top += logical_delta.y;
                         }
 
-                        if let Ok(primary_window_entity) = primary_window.single() {
-                            let winit_window = winit_windows
-                                .get_window(primary_window_entity)
-                                .expect("Primary window not found");
-
-                            let PhysicalSize { width, height } = winit_window.inner_size();
-                            let screen_w = width as f32;
-                            let screen_h = height as f32;
-                            let computed = computed_node_query
-                                .get(window_entity)
-                                .expect("ComputedNode missing");
-                            let node_w = computed.size.x;
-                            let node_h = computed.size.y;
+                        if let Ok(computed) = computed_node_query.get(window_entity) {
+                            let node_w = computed.size.x * computed.inverse_scale_factor;
+                            let node_h = computed.size.y * computed.inverse_scale_factor;
                             if let (Val::Px(left), Val::Px(top)) = (node.left, node.top) {
                                 let center_x = left + node_w * 0.5;
                                 let center_y = top + node_h * 0.5;
@@ -662,8 +669,8 @@ impl Titlebar {
                                         &footer_query,
                                         &computed_node_query,
                                         &mut nodes,
-                                        &winit_windows,
-                                        primary_window_entity,
+                                        primary_entity,
+                                        primary_window,
                                     );
                                 }
                             }
@@ -672,7 +679,7 @@ impl Titlebar {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<DragEnd>>,
+                move |_: On<Pointer<DragEnd>>,
                       window: Single<Entity, With<Window>>,
                       mut commands: Commands| {
                     commands
@@ -681,7 +688,7 @@ impl Titlebar {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<DragStart>>,
+                move |_: On<Pointer<DragStart>>,
                       window: Single<Entity, With<Window>>,
                       mut commands: Commands| {
                     commands
@@ -690,7 +697,7 @@ impl Titlebar {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<Over>>,
+                move |_: On<Pointer<Over>>,
                       window: Single<Entity, With<Window>>,
                       mut commands: Commands| {
                     commands
@@ -699,7 +706,7 @@ impl Titlebar {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<Out>>,
+                move |_: On<Pointer<Out>>,
                       window: Single<Entity, With<Window>>,
                       mut commands: Commands| {
                     commands
@@ -758,11 +765,11 @@ impl CloseButton {
         commands
             .entity(entity)
             .observe(
-                move |trigger: Trigger<Pointer<Click>>,
+                move |trigger: On<Pointer<Click>>,
                       mut commands: Commands,
                       window: Single<Entity, With<Window>>,
                       close_btn_query: Query<&CloseButton>| {
-                    if let Ok(close_btn) = close_btn_query.get(trigger.target()) {
+                    if let Ok(close_btn) = close_btn_query.get(trigger.entity) {
                         commands.entity(close_btn.window_entity).despawn();
                     }
                     commands
@@ -771,7 +778,7 @@ impl CloseButton {
                 },
             )
             .observe(
-                move |mut trigger: Trigger<Pointer<Over>>,
+                move |mut trigger: On<Pointer<Over>>,
                       mut commands: Commands,
                       window: Single<Entity, With<Window>>| {
                     commands
@@ -781,7 +788,7 @@ impl CloseButton {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<Out>>,
+                move |_: On<Pointer<Out>>,
                       mut commands: Commands,
                       window: Single<Entity, With<Window>>| {
                     commands
@@ -823,6 +830,10 @@ impl ResizeCorner {
                 bottom: Val::Px(0.0),
                 ..default()
             })
+            .insert(UiTransform {
+                scale: Vec2::new(-1.0, 1.0),
+                ..default()
+            })
             .insert(component)
             .with_children(|corner| {
                 corner
@@ -833,11 +844,7 @@ impl ResizeCorner {
                         font: icon_font,
                         ..default()
                     })
-                    .insert(TextColor(style.resize_handle_color))
-                    .insert(Transform {
-                        scale: Vec3::new(-1.0, 1.0, 1.0),
-                        ..default()
-                    });
+                    .insert(TextColor(style.resize_handle_color));
             })
             .id();
 
@@ -850,7 +857,7 @@ impl ResizeCorner {
         commands
             .entity(entity)
             .observe(
-                move |mut trigger: Trigger<Pointer<Over>>,
+                move |mut trigger: On<Pointer<Over>>,
                       mut commands: Commands,
                       window: Single<Entity, With<Window>>| {
                     commands
@@ -860,7 +867,7 @@ impl ResizeCorner {
                 },
             )
             .observe(
-                move |_: Trigger<Pointer<Out>>,
+                move |_: On<Pointer<Out>>,
                       mut commands: Commands,
                       window: Single<Entity, With<Window>>| {
                     commands
@@ -869,13 +876,12 @@ impl ResizeCorner {
                 },
             )
             .observe(
-                move |trigger: Trigger<Pointer<Drag>>,
+                move |trigger: On<Pointer<Drag>>,
                       mut nodes: Query<&mut Node>,
                       computed: Query<&ComputedNode>,
                       corners: Query<&ResizeCorner>| {
                     let drag = trigger.event();
-
-                    if let Ok(resize) = corners.get(trigger.target()) {
+                    if let Ok(resize) = corners.get(trigger.entity) {
                         if let Ok(mut node) = nodes.get_mut(resize.window_entity) {
                             if let Ok(layout) = computed.get(resize.window_entity) {
                                 let logical_size = layout.size() * layout.inverse_scale_factor();
@@ -909,8 +915,7 @@ impl ResizeCorner {
 
 fn detect_os_window_reentry(
     mut commands: Commands,
-    winit_windows: NonSend<WinitWindows>,
-    primary_window_query: Query<Entity, With<PrimaryWindow>>,
+    primary_window_query: Query<(Entity, &Window), With<PrimaryWindow>>,
     promoted_windows: Query<Entity, With<OsWindow>>,
     children_query: Query<&Children>,
     os_window_query: Query<&OsWindow>,
@@ -923,56 +928,146 @@ fn detect_os_window_reentry(
         return;
     }
 
-    let Ok(primary_entity) = primary_window_query.single() else {
+    let Ok((primary_entity, _primary_window)) = primary_window_query.single() else {
         return;
     };
 
-    let Some(primary_window) = winit_windows.get_window(primary_entity) else {
+    let mut to_revert = Vec::new();
+
+    WINIT_WINDOWS.with_borrow(|winit_windows| {
+        let Some(primary_winit_window) = winit_windows.get_window(primary_entity) else {
+            return;
+        };
+
+        let Ok(primary_position) = primary_winit_window.outer_position() else {
+            return;
+        };
+        let primary_size = primary_winit_window.outer_size();
+
+        let primary_left = primary_position.x;
+        let primary_top = primary_position.y;
+        let primary_right = primary_left + primary_size.width as i32;
+        let primary_bottom = primary_top + primary_size.height as i32;
+
+        for entity in promoted_windows.iter() {
+            let Some(os_window) = winit_windows.get_window(entity) else {
+                continue;
+            };
+
+            let Ok(os_position) = os_window.outer_position() else {
+                continue;
+            };
+            let os_size = os_window.outer_size();
+
+            let os_left = os_position.x;
+            let os_top = os_position.y;
+            let os_right = os_left + (os_size.width as i32) / 2;
+            let os_bottom = os_top + (os_size.height as i32) / 2;
+
+            let within_bounds = os_left > primary_left
+                && os_top > primary_top
+                && os_right < primary_right
+                && os_bottom < primary_bottom;
+
+            if within_bounds {
+                to_revert.push(entity);
+            }
+        }
+    });
+
+    for entity in to_revert {
+        UiWindow::revert_to_ui_window(
+            entity,
+            &mut commands,
+            &children_query,
+            &os_window_query,
+            &ui_window_query,
+            &titlebar_query,
+            &footer_query,
+            &mut node_query,
+            primary_entity,
+        );
+    }
+}
+
+fn detect_os_window_promotion(
+    mut commands: Commands,
+    primary_window_query: Query<(Entity, &Window), With<PrimaryWindow>>,
+    ui_windows: Query<(Entity, &UiWindow), Without<OsWindow>>,
+    children_query: Query<&Children>,
+    content_container_query: Query<&Content>,
+    titlebar_query: Query<&Titlebar>,
+    footer_query: Query<&Footer>,
+    computed_node_query: Query<&ComputedNode>,
+    mut node_query: Query<&mut Node>,
+) {
+    let Ok((primary_entity, primary_window)) = primary_window_query.single() else {
         return;
     };
 
-    let Ok(primary_position) = primary_window.outer_position() else {
-        return;
-    };
-    let primary_size = primary_window.outer_size();
+    let screen_w = primary_window.resolution.width();
+    let screen_h = primary_window.resolution.height();
 
-    let primary_left = primary_position.x;
-    let primary_top = primary_position.y;
-    let primary_right = primary_left + (primary_size.width as i32);
-    let primary_bottom = primary_top + (primary_size.height as i32);
+    for (window_entity, ui_window) in ui_windows.iter() {
+        if !ui_window.options.draggable {
+            continue;
+        }
 
-    for entity in promoted_windows.iter() {
-        let Some(os_window) = winit_windows.get_window(entity) else {
+        let (left, top) = {
+            let Ok(node) = node_query.get(window_entity) else {
+                continue;
+            };
+            let left = match node.left.clone() {
+                Val::Px(value) => value,
+                _ => continue,
+            };
+            let top = match node.top.clone() {
+                Val::Px(value) => value,
+                _ => continue,
+            };
+            (left, top)
+        };
+
+        let children = match children_query.get(window_entity) {
+            Ok(children) => children,
+            Err(_) => continue,
+        };
+
+        let mut content_entity = None;
+        for child in children.iter() {
+            if content_container_query.get(child).is_ok() {
+                content_entity = Some(child);
+                break;
+            }
+        }
+        let Some(content_entity) = content_entity else {
             continue;
         };
 
-        let Ok(os_position) = os_window.outer_position() else {
+        let Ok(layout) = computed_node_query.get(content_entity) else {
             continue;
         };
-        let os_size = os_window.outer_size();
+        let logical_size = layout.size() * layout.inverse_scale_factor;
+        let width = logical_size.x;
+        let height = logical_size.y;
 
-        let os_left = os_position.x;
-        let os_top = os_position.y;
-        let os_right = os_left + (os_size.width as i32) / 2;
-        let os_bottom = os_top + (os_size.height as i32) / 2;
+        let center_x = left + width * 0.5;
+        let center_y = top + height * 0.5;
+        let out_of_bounds =
+            center_x < 0.0 || center_y < 0.0 || center_x > screen_w || center_y > screen_h;
 
-        let within_bounds = os_left > primary_left
-            && os_top > primary_top
-            && os_right < primary_right
-            && os_bottom < primary_bottom;
-
-        if within_bounds {
-            UiWindow::revert_to_ui_window(
-                entity,
+        if out_of_bounds {
+            UiWindow::convert_to_os_window(
+                window_entity,
                 &mut commands,
-                &winit_windows,
                 &children_query,
-                &os_window_query,
-                &ui_window_query,
+                &content_container_query,
                 &titlebar_query,
                 &footer_query,
+                &computed_node_query,
                 &mut node_query,
                 primary_entity,
+                primary_window,
             );
         }
     }

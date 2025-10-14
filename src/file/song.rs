@@ -2,7 +2,6 @@ use serde::{self, Deserialize, Deserializer};
 use serde_yaml::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -10,7 +9,6 @@ use bevy::{
     asset::{io::Reader, Asset, AssetLoader, Handle, LoadContext, ReadAssetBytesError},
     prelude::*,
     reflect::TypePath,
-    tasks::BoxedFuture,
 };
 
 #[derive(Asset, TypePath, Debug)]
@@ -164,6 +162,7 @@ impl Song {
     }
 }
 
+#[allow(dead_code)]
 fn arrangement_keys_only<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,

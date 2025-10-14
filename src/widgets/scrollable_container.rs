@@ -6,7 +6,7 @@ use bevy::{
 
 const LINE_HEIGHT: f32 = 20.0;
 
-#[derive(Event)]
+#[derive(Event, Message)]
 pub struct ScrollbarMovedEvent {
     pub scrollbar_entity: Entity,
 }
@@ -15,7 +15,7 @@ pub struct ScrollContainerPlugin;
 
 impl Plugin for ScrollContainerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<ScrollbarMovedEvent>()
+        app.add_message::<ScrollbarMovedEvent>()
             .add_systems(Update, update_scrollbar_height)
             .add_systems(Update, sync_scrollbar_to_content);
     }
@@ -150,12 +150,12 @@ impl ScrollContainer {
 
     fn register_scrollwheel_observers(container_entity: Entity, commands: &mut Commands) {
         commands.entity(container_entity).observe(
-            move |mut trigger: Trigger<Pointer<Scroll>>,
+            move |mut trigger: On<Pointer<Scroll>>,
                   scroll_container_query: Query<&ScrollContainer>,
                   mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
-                  mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>| {
+                  mut scrollbar_event_writer: MessageWriter<ScrollbarMovedEvent>| {
                 let scroll_delta = trigger.event().y * LINE_HEIGHT;
-                if let Ok(scroll_container) = scroll_container_query.get(trigger.target()) {
+                if let Ok(scroll_container) = scroll_container_query.get(trigger.entity) {
                     if let Ok((thumb_node, scrollbar)) =
                         scrollbar_query.get_mut(scroll_container.scrollbar_entity)
                     {
@@ -188,11 +188,11 @@ impl ScrollBar {
     }
     pub fn register_scrollbar_drag_observers(scrollbar_entity: Entity, commands: &mut Commands) {
         commands.entity(scrollbar_entity).observe(
-            move |mut trigger: Trigger<Pointer<Drag>>,
+            move |mut trigger: On<Pointer<Drag>>,
                   mut scrollbar_query: Query<(&mut Node, &ScrollBar)>,
-                  mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>| {
+                  mut scrollbar_event_writer: MessageWriter<ScrollbarMovedEvent>| {
                 let drag_delta = trigger.event().delta.y;
-                let thumb_entity = trigger.target();
+                let thumb_entity = trigger.entity;
                 if let Ok((thumb_node, scrollbar)) = scrollbar_query.get_mut(thumb_entity) {
                     ScrollBar::move_thumb(thumb_node, scrollbar, -drag_delta);
                     scrollbar_event_writer.write(ScrollbarMovedEvent {
@@ -218,7 +218,7 @@ pub fn update_scrollbar_height(
     query: Query<(&Children, &ComputedNode), (With<ScrollContainer>, Changed<ComputedNode>)>,
     computed_node_query: Query<&ComputedNode>,
     content_query: Query<(), With<ScrollContent>>,
-    mut scrollbar_event_writer: EventWriter<ScrollbarMovedEvent>,
+    mut scrollbar_event_writer: MessageWriter<ScrollbarMovedEvent>,
     mut scrollbar_query: Query<(&mut Node, &mut ScrollBar)>,
 ) {
     for (child_entities, container_computed) in &query {
@@ -265,7 +265,7 @@ pub fn update_scrollbar_height(
 }
 
 pub fn sync_scrollbar_to_content(
-    mut scrollbar_move_events: EventReader<ScrollbarMovedEvent>,
+    mut scrollbar_move_events: MessageReader<ScrollbarMovedEvent>,
     mut node_query: Query<&mut Node>,
     scrollbar_query: Query<&ScrollBar>,
 ) {

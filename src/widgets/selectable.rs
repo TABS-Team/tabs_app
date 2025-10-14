@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
 use crate::widgets::{Active, ButtonStyle, ButtonType, GenericButton, UiBorder, UiContext};
+use bevy::picking::prelude::*;
 use bevy::prelude::*;
-use bevy::window::SystemCursorIcon;
-use bevy::winit::cursor::CursorIcon;
 
-#[derive(Event)]
+#[derive(EntityEvent, Message)]
 pub struct SelectedEvent {
+    #[event_target]
+    pub selectable: Entity,
     pub id: String,
-    pub entity: Entity,
+    pub item: Entity,
     pub selected: bool,
 }
 
@@ -106,17 +107,13 @@ impl SelectableBuilder {
                     border: self.style.border.size,
                     ..default()
                 },
-                BorderColor(self.style.border.color),
+                BorderColor::all(self.style.border.color),
                 self.style.border.radius,
             ))
             .with_children(|container| {
                 let mut entities: Vec<Entity> = vec![];
                 let mut entity_comps: Vec<SelectableItem> = vec![];
                 for (i, button) in self.buttons.iter().enumerate() {
-                    let btn_comp = SelectableItem {
-                        id: button.id.clone(),
-                        selected: false,
-                    };
                     let btn_entity = GenericButton::builder(button.button_type.clone())
                         .style(self.style.button_style.clone())
                         .spawn(container, ctx);
@@ -183,13 +180,13 @@ impl Selectable {
         SelectableBuilder::new(selectable_type, buttons, default_selected)
     }
 
-    fn register_observers(entity: Entity, mut commands: &mut Commands) {
+    fn register_observers(entity: Entity, commands: &mut Commands) {
         commands.entity(entity).observe(
-            |trigger: Trigger<Pointer<Click>>,
+            |trigger: On<Pointer<Click>>,
              mut selectable_query: Query<&mut Selectable>,
              parents: Query<&ChildOf>,
              mut commands: Commands| {
-                let entity = trigger.target();
+                let entity = trigger.entity;
                 let Ok(parent) = parents.get(entity) else {
                     return;
                 };
@@ -208,8 +205,8 @@ impl Selectable {
 
                     let selectable_type = selectable.selectable_type;
 
-                    if let Some(mut is_selected) = selectable.selected.get_mut(&entity) {
-                        let previous_select = is_selected.clone();
+                    if let Some(is_selected) = selectable.selected.get_mut(&entity) {
+                        let previous_select = *is_selected;
                         if selectable_type == SelectableType::Checkbox {
                             *is_selected = !*is_selected;
                         } else {
@@ -240,14 +237,12 @@ pub fn active_change_listener(
             item_comp.selected = true;
 
             let parent = child_of.parent();
-            commands.trigger_targets(
-                SelectedEvent {
-                    id: item_comp.id.clone(),
-                    entity,
-                    selected: item_comp.selected,
-                },
-                parent,
-            );
+            commands.trigger(SelectedEvent {
+                selectable: parent,
+                id: item_comp.id.clone(),
+                item: entity,
+                selected: item_comp.selected,
+            });
         }
     }
 }
@@ -262,14 +257,12 @@ pub fn active_removed_listener(
         if let Ok(item_comp) = selected_item_query.get(entity) {
             if let Ok(child_of) = child_of_query.get(entity) {
                 let parent = child_of.parent();
-                commands.trigger_targets(
-                    SelectedEvent {
-                        id: item_comp.id.clone(),
-                        entity,
-                        selected: false,
-                    },
-                    parent,
-                );
+                commands.trigger(SelectedEvent {
+                    selectable: parent,
+                    id: item_comp.id.clone(),
+                    item: entity,
+                    selected: false,
+                });
             }
         }
     }

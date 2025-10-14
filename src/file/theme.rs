@@ -6,6 +6,25 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn default_instrument_key_colors() -> Vec<Color> {
+    vec![
+        Color::srgb(0.941, 0.325, 0.314),
+        Color::srgb(0.980, 0.623, 0.121),
+        Color::srgb(0.988, 0.847, 0.176),
+        Color::srgb(0.368, 0.772, 0.352),
+        Color::srgb(0.203, 0.596, 0.858),
+        Color::srgb(0.556, 0.415, 0.835),
+        Color::srgb(0.960, 0.525, 0.749),
+        Color::srgb(0.258, 0.780, 0.682),
+        Color::srgb(0.862, 0.403, 0.258),
+        Color::srgb(0.545, 0.545, 0.545),
+    ]
+}
+
+pub fn fallback_instrument_key_palette() -> Vec<Color> {
+    default_instrument_key_colors()
+}
+
 #[derive(Resource, Debug, Clone, Deserialize, Serialize)]
 pub struct Theme {
     #[serde(with = "srgb_float")]
@@ -32,6 +51,8 @@ pub struct Theme {
     pub divider: Color,
     #[serde(with = "srgb_float")]
     pub error_main: Color,
+    #[serde(default = "default_instrument_key_colors", with = "color_vec")]
+    pub instrument_keys: Vec<Color>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Resource)]
@@ -91,10 +112,41 @@ fn create_default_themes() -> Themes {
             background_paper: Color::srgb(0.0627, 0.0667, 0.0627), // #101110
             divider: Color::srgb(0.8196, 0.8118, 0.8118), // #d1cfcf
             error_main: Color::srgb(0.9569, 0.2627, 0.2118), // #f44336
+            instrument_keys: default_instrument_key_colors(),
         },
     );
 
     Themes { themes }
+}
+
+mod color_vec {
+    use bevy::prelude::Color;
+    use serde::de::Deserializer;
+    use serde::ser::{SerializeSeq, Serializer};
+    use serde::Deserialize;
+
+    pub fn serialize<S>(colors: &Vec<Color>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(colors.len()))?;
+        for color in colors {
+            let srgba = color.to_srgba();
+            seq.serialize_element(&[srgba.red, srgba.green, srgba.blue])?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Color>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let rgb_list: Vec<[f32; 3]> = Vec::deserialize(deserializer)?;
+        Ok(rgb_list
+            .into_iter()
+            .map(|rgb| Color::srgb(rgb[0], rgb[1], rgb[2]))
+            .collect())
+    }
 }
 
 mod srgb_float {

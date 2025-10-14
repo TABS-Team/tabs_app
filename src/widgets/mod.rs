@@ -43,7 +43,6 @@ impl Plugin for UiLayerPlugin {
                     selectable::active_removed_listener,
                 ),
             )
-            .add_event::<SelectedEvent>()
             .add_plugins(scrollable_container::ScrollContainerPlugin);
     }
 }

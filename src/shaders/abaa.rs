@@ -1,4 +1,4 @@
-use bevy::{prelude::*, reflect::TypePath, render::render_resource::*};
+use bevy::{prelude::*, reflect::TypePath, render::render_resource::*, shader::ShaderRef};
 
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct AbaaMaterial {

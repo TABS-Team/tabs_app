@@ -1,4 +1,3 @@
-use crate::states::AppState;
 use crate::widgets::{UiButton, UiContext};
 use bevy::prelude::*;
 
@@ -91,7 +90,7 @@ impl CardBuilder {
                 ..Default::default()
             },
             BackgroundColor(card.style.background_color),
-            BorderColor(card.style.border_color),
+            BorderColor::all(card.style.border_color),
             BorderRadius::new(
                 Val::Px(card.style.border_radius),
                 Val::Px(card.style.border_radius),

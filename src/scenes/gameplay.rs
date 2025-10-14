@@ -1,9 +1,11 @@
-use crate::file::song::{TabNote, VocalPhrase};
+use crate::components::{
+    timeline_block_duration, timeline_window_seconds, StringTimelineFeed, TimelineNote,
+};
+use crate::file::song::{TabNoteChart, VocalPhrase};
 use crate::file::Tab;
 use crate::scenes::song_selection::SongSelectState;
 use crate::states::GameState;
 use bevy::prelude::*;
-use bevy::time::{Timer, TimerMode};
 use std::time::Instant;
 
 #[derive(Resource, Default)]
@@ -122,7 +124,7 @@ pub fn update_loading_ui(mut query: Query<&mut Visibility, With<LoadingUI>>) {
     }
 }
 
-pub fn start_audio(
+pub fn start_game_session(
     mut commands: Commands,
     assets: Res<GameplayAssets>,
     mut song_clock: ResMut<SongPlayback>,
@@ -131,21 +133,12 @@ pub fn start_audio(
     song_clock.mark_started();
 }
 
-pub fn log_tab_progress(
+pub fn track_timeline(
     assets: Res<GameplayAssets>,
     song_clock: Res<SongPlayback>,
     tabs: Res<Assets<Tab>>,
-    time: Res<Time>,
-    mut timer: Local<Timer>,
+    mut timeline: ResMut<StringTimelineFeed>,
 ) {
-    if timer.duration().is_zero() {
-        *timer = Timer::from_seconds(0.5, TimerMode::Repeating);
-    }
-
-    if !timer.tick(time.delta()).just_finished() {
-        return;
-    }
-
     let Some(current_time) = song_clock.current_time() else {
         return;
     };
@@ -158,41 +151,62 @@ pub fn log_tab_progress(
         return;
     };
 
+    let block_duration = timeline_block_duration();
+    let window_length = timeline_window_seconds();
+    let current_block_index = (current_time / block_duration).floor().max(0.0) as i32;
+    let window_start_block = (current_block_index - 1).max(0);
+    let window_start = window_start_block as f32 * block_duration;
+    let window_end = window_start + window_length;
+
+    timeline.window_start = window_start;
+    timeline.window_end = window_end;
+    timeline.current_time = current_time;
+
     match tab {
         Tab::Strings(tab_data) => {
-            let mut upcoming: Vec<(f32, i32, &TabNote)> = tab_data
-                .note_charts
+            let chart = select_chart(tab_data);
+            let Some(chart) = chart else {
+                timeline.string_count = 0;
+                timeline.notes.clear();
+                return;
+            };
+
+            let string_count = chart
+                .notes
                 .iter()
-                .flat_map(|chart| chart.notes.iter().map(move |note| (chart.difficulty, note)))
-                .filter(|(_, note)| note.time >= current_time)
-                .map(|(difficulty, note)| (note.time - current_time, difficulty, note))
-                .collect();
+                .filter_map(|note| (note.string >= 0).then_some(note.string as usize + 1))
+                .max()
+                .unwrap_or(0);
 
-            upcoming.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            upcoming.truncate(3);
+            let mut visible_notes = Vec::new();
+            for note in &chart.notes {
+                let note_start = note.time;
+                let note_end = (note.time + note.sustain.max(0.0)).max(note_start);
 
-            if upcoming.is_empty() {
-                info!(
-                    "[TabSync] t={:.3}s | no upcoming notes ({} charts)",
-                    current_time,
-                    tab_data.note_charts.len()
-                );
-            } else {
-                let notes_summary = upcoming
-                    .iter()
-                    .map(|(delta, difficulty, note)| {
-                        format!(
-                            "+{:.3}s d{} str:{} fret:{}",
-                            delta, difficulty, note.string, note.fret
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
+                if note_end < window_start {
+                    continue;
+                }
+                if note_start > window_end {
+                    continue;
+                }
+                if note.string < 0 {
+                    continue;
+                }
 
-                info!("[TabSync] t={:.3}s | {}", current_time, notes_summary);
+                visible_notes.push(TimelineNote {
+                    time: note.time,
+                    sustain: note.sustain.max(0.0),
+                    string_index: note.string as usize,
+                    fret: note.fret,
+                });
             }
+
+            timeline.string_count = string_count;
+            timeline.notes = visible_notes;
         }
         Tab::Vocals(vocals) => {
+            timeline.string_count = 0;
+            timeline.notes.clear();
             let mut upcoming: Vec<(f32, &VocalPhrase)> = vocals
                 .vocals
                 .iter()
@@ -215,4 +229,11 @@ pub fn log_tab_progress(
             }
         }
     }
+}
+
+fn select_chart(tab: &crate::file::song::StringTab) -> Option<&TabNoteChart> {
+    tab.note_charts
+        .iter()
+        .min_by_key(|chart| chart.difficulty)
+        .or_else(|| tab.note_charts.first())
 }

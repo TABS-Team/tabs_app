@@ -7,7 +7,7 @@ edition = "2021"
 production = []
 
 [dependencies]
-bevy = { version = "0.16", features = ["serialize", "bevy_picking", "bevy_dev_tools", "bevy_winit"] }
+bevy = { version = "0.17", features = ["serialize", "bevy_picking", "bevy_dev_tools", "bevy_winit"] }
 winit = { version = "0.30.11" }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"

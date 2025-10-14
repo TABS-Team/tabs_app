@@ -21,7 +21,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "TABS".to_string(),
-                    resolution: WindowResolution::new(600.0, 400.0),
+                    resolution: WindowResolution::new(600, 400),
                     ..default()
                 }),
                 exit_condition: ExitCondition::OnPrimaryClosed,
@@ -40,17 +40,25 @@ fn main() {
 }
 
 fn start_maximized(
-    winit_windows: NonSend<WinitWindows>,
+    winit_windows: Option<NonSend<WinitWindows>>,
     primary_window_query: Query<Entity, With<PrimaryWindow>>,
     mut windows: Query<&mut Window>,
 ) {
-    if let Ok(window_entity) = primary_window_query.single() {
-        if let Some(window) = winit_windows.get_window(window_entity) {
-            if !window.is_maximized() {
-                if let Ok(mut window) = windows.get_mut(window_entity) {
-                    window.set_maximized(true);
-                }
-            }
+    let Some(winit_windows) = winit_windows else {
+        return;
+    };
+
+    let Some(window_entity) = primary_window_query.iter().next() else {
+        return;
+    };
+
+    if let Some(window) = winit_windows.get_window(window_entity) {
+        if window.is_maximized() {
+            return;
+        }
+
+        if let Ok(mut window) = windows.get_mut(window_entity) {
+            window.set_maximized(true);
         }
     }
 }
