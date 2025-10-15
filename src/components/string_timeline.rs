@@ -247,6 +247,8 @@ struct StringTimelineView {
     root: Option<Entity>,
     block_stack: Option<Entity>,
     indicator: Option<Entity>,
+    indicator_block_index: Option<i32>,
+    indicator_block_progress: f32,
     blocks: Vec<BlockView>,
     cached_string_count: usize,
     base_block_index: i32,
@@ -671,6 +673,8 @@ fn setup_timeline_ui(
     view.root = Some(root);
     view.block_stack = Some(block_stack);
     view.indicator = Some(indicator);
+    view.indicator_block_index = None;
+    view.indicator_block_progress = 0.0;
     view.blocks.clear();
     view.cached_string_count = 0;
     view.base_block_index = 0;
@@ -820,16 +824,27 @@ fn update_timeline(
             current_block_index,
             technique_registry.as_ref(),
         );
-        let view_ref: &StringTimelineView = &view;
+        let overlay_progress = if let Some(idx) = view.indicator_block_index {
+            if idx == current_block_index {
+                view.indicator_block_progress
+            } else if idx < current_block_index {
+                1.0
+            } else {
+                block_progress
+            }
+        } else {
+            block_progress
+        };
+
         update_overlays(
-            view_ref,
+            &view,
             current_block_index,
-            block_progress,
+            overlay_progress,
             &mut node_query,
         );
         update_indicator(
             &mut commands,
-            view_ref,
+            &mut view,
             current_block_index,
             block_progress,
             &mut node_query,
@@ -2090,7 +2105,7 @@ fn update_overlays(
 
 fn update_indicator(
     commands: &mut Commands,
-    view: &StringTimelineView,
+    view: &mut StringTimelineView,
     current_block_index: i32,
     block_progress: f32,
     node_query: &mut Query<&mut Node>,
@@ -2113,7 +2128,23 @@ fn update_indicator(
             node.top = Val::Px(0.0);
             node.height = Val::Percent(100.0);
         }
-        let width_percent = (block_progress * 100.0).clamp(0.0, 100.0);
+        let smoothed_progress = if let Some(previous_index) = view.indicator_block_index {
+            if previous_index == current_block_index {
+                let blended = view.indicator_block_progress
+                    + (block_progress - view.indicator_block_progress) * 0.3;
+                view.indicator_block_progress = blended;
+                blended
+            } else {
+                view.indicator_block_index = Some(current_block_index);
+                view.indicator_block_progress = block_progress;
+                block_progress
+            }
+        } else {
+            view.indicator_block_index = Some(current_block_index);
+            view.indicator_block_progress = block_progress;
+            block_progress
+        };
+        let width_percent = (smoothed_progress * 100.0).clamp(0.0, 100.0);
         node.left = Val::Percent(width_percent);
     }
 }

@@ -52,6 +52,8 @@ impl SongPlayback {
     }
 
     pub fn current_time(&mut self) -> Option<f32> {
+        const SMOOTHING_ALPHA: f32 = 0.15;
+
         if let Some(handle) = self.stream_handle.as_mut() {
             if let Some(error) = handle.pop_error() {
                 error!("Streaming decode error: {error}");
@@ -72,9 +74,14 @@ impl SongPlayback {
                         info!("Streaming state {:?}", state);
                         self.last_logged_state = Some(state);
                     }
-                    let position = handle.position() as f32;
-                    self.reference_origin = Some((Instant::now(), position));
-                    return Some(position);
+                    let raw_position = handle.position() as f32;
+                    let smoothed = if let Some((_, previous)) = self.reference_origin {
+                        previous + (raw_position - previous) * SMOOTHING_ALPHA
+                    } else {
+                        raw_position
+                    };
+                    self.reference_origin = Some((Instant::now(), smoothed));
+                    return Some(smoothed);
                 } else {
                     warn!(
                         "Streaming state {:?}; falling back to reference clock",
