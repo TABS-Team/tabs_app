@@ -13,4 +13,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"
 dirs = "6.0"
 thiserror = "2.0"
-bevy_kira_audio = { version = "0.24", features = ["ogg"] }
+kira = { version = "0.10.8", default-features = false, features = ["cpal", "ogg", "wav"] }
+bevy_kira_audio = { version = "0.24", features = ["ogg", "wav"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["ogg", "vorbis", "wav", "pcm"] }

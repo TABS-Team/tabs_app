@@ -216,9 +216,10 @@ impl AssetLoader for SongLoader {
         let album_art: Handle<Image> = load_context
             .loader()
             .load::<Image>(folder.join("album_art.png"));
+        let audio_preview_path = folder.join("preview.wav");
         let audio_preview: Handle<KiraAudioSource> = load_context
             .loader()
-            .load::<KiraAudioSource>(folder.join("preview.ogg"));
+            .load::<KiraAudioSource>(audio_preview_path);
 
         Ok(Song {
             metadata,

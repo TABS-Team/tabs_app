@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod components;
 pub mod debug;
 pub mod file;

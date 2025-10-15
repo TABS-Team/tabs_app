@@ -1,3 +1,4 @@
+use crate::audio::StreamingAudio;
 use crate::components::{
     clamp_block_duration, default_block_duration, visible_block_count, StringTimelineFeed,
     TimelineNote,
@@ -7,11 +8,13 @@ use crate::file::Tab;
 use crate::scenes::song_selection::SongSelectState;
 use crate::states::GameState;
 use bevy::prelude::*;
-use bevy_kira_audio::prelude::{
-    Audio as GameAudio, AudioControl, AudioInstance, AudioSource as KiraAudioSource, PlaybackState,
-};
+use kira::sound::streaming::StreamingSoundHandle;
+use kira::sound::FromFileError;
+use kira::sound::PlaybackState;
+use kira::Tween;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const DEFAULT_DIFFICULTY_PERCENT: f32 = 100.0;
@@ -22,47 +25,68 @@ const BEATS_PER_BLOCK: f32 = 4.0;
 
 #[derive(Resource, Default)]
 pub struct GameplayAssets {
-    audio_handle: Handle<KiraAudioSource>,
+    audio_path: Option<PathBuf>,
     tab_handle: Handle<Tab>,
 }
 
 #[derive(Resource, Default)]
 pub struct SongPlayback {
-    start_instant: Option<Instant>,
-    instance_handle: Option<Handle<AudioInstance>>,
+    stream_handle: Option<StreamingSoundHandle<FromFileError>>,
+    reference_origin: Option<(Instant, f32)>,
+    last_logged_state: Option<PlaybackState>,
 }
 
 impl SongPlayback {
     pub fn reset(&mut self) {
-        self.start_instant = None;
-        self.instance_handle = None;
+        if let Some(mut handle) = self.stream_handle.take() {
+            handle.stop(Tween::default());
+        }
+        self.reference_origin = None;
+        self.last_logged_state = None;
     }
 
-    pub fn mark_started(&mut self, handle: Handle<AudioInstance>) {
-        self.start_instant = Some(Instant::now());
-        self.instance_handle = Some(handle);
+    pub fn mark_streaming(&mut self, handle: StreamingSoundHandle<FromFileError>) {
+        self.reference_origin = Some((Instant::now(), 0.0));
+        self.stream_handle = Some(handle);
+        self.last_logged_state = None;
     }
 
-    pub fn current_time(&self, instances: &Assets<AudioInstance>) -> Option<f32> {
-        if let Some(handle) = self.instance_handle.as_ref() {
-            if let Some(instance) = instances.get(handle) {
-                match instance.state() {
-                    PlaybackState::Playing { position }
-                    | PlaybackState::Paused { position }
-                    | PlaybackState::Pausing { position }
-                    | PlaybackState::Stopping { position }
-                    | PlaybackState::WaitingToResume { position }
-                    | PlaybackState::Resuming { position } => {
-                        return Some(position as f32);
+    pub fn current_time(&mut self) -> Option<f32> {
+        if let Some(handle) = self.stream_handle.as_mut() {
+            if let Some(error) = handle.pop_error() {
+                error!("Streaming decode error: {error}");
+                handle.stop(Tween::default());
+                self.stream_handle = None;
+            } else {
+                let state = handle.state();
+                if matches!(
+                    state,
+                    PlaybackState::Playing
+                        | PlaybackState::Paused
+                        | PlaybackState::Pausing
+                        | PlaybackState::WaitingToResume
+                        | PlaybackState::Resuming
+                        | PlaybackState::Stopping
+                ) {
+                    if self.last_logged_state != Some(state) {
+                        info!("Streaming state {:?}", state);
+                        self.last_logged_state = Some(state);
                     }
-                    _ => {}
+                    let position = handle.position() as f32;
+                    self.reference_origin = Some((Instant::now(), position));
+                    return Some(position);
+                } else {
+                    warn!(
+                        "Streaming state {:?}; falling back to reference clock",
+                        state
+                    );
+                    self.last_logged_state = Some(state);
                 }
             }
         }
 
-        self.start_instant
-            .as_ref()
-            .map(|instant| instant.elapsed().as_secs_f32())
+        self.reference_origin
+            .map(|(origin, position)| position + origin.elapsed().as_secs_f32())
     }
 }
 
@@ -103,6 +127,7 @@ pub fn start_loading_assets(
 ) {
     gameplay_state.set(GameState::Loading);
     song_clock.reset();
+    loading.audio_path = None;
     let song_metadata_path = if let Some(song_handle) = &selected_song.selected_song {
         let metadata_path = if let Some(path) = song_handle.path() {
             path.path()
@@ -122,16 +147,25 @@ pub fn start_loading_assets(
 
     let song_folder_path = song_metadata_path.parent().unwrap();
 
-    let audio_path = song_folder_path.join("song.ogg");
+    let audio_relative_path = song_folder_path.join("song.wav");
     let instrument_file = format!("{}.tab", instrument_name);
     let instrument_path = song_folder_path.join(instrument_file);
 
+    let audio_full_path = if audio_relative_path.is_absolute() {
+        audio_relative_path.clone()
+    } else {
+        Path::new("assets").join(&audio_relative_path)
+    };
+
     info!("Song folder {}", song_folder_path.display());
-    info!("Audio path {}", audio_path.display());
+    info!("Audio path {}", audio_relative_path.display());
     info!("Instrument path {}", instrument_path.display());
 
-    let audio_handle: Handle<KiraAudioSource> = asset_server.load(audio_path);
-    loading.audio_handle = audio_handle;
+    if !audio_full_path.exists() {
+        warn!("Audio file does not exist at {}", audio_full_path.display());
+    }
+
+    loading.audio_path = Some(audio_full_path);
 
     let tab_handle: Handle<Tab> = asset_server.load(instrument_path);
     loading.tab_handle = tab_handle;
@@ -142,16 +176,10 @@ pub fn check_loading_progress(
     asset_server: Res<AssetServer>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    let mut all_loaded = true;
-    if !asset_server.load_state(&loading.audio_handle).is_loaded() {
-        all_loaded = false;
-    }
+    let tab_ready = asset_server.load_state(&loading.tab_handle).is_loaded();
+    let audio_ready = loading.audio_path.is_some();
 
-    if !asset_server.load_state(&loading.tab_handle).is_loaded() {
-        all_loaded = false;
-    }
-
-    if all_loaded {
+    if tab_ready && audio_ready {
         next_state.set(GameState::InGame);
     }
 }
@@ -164,28 +192,39 @@ pub fn update_loading_ui(mut query: Query<&mut Visibility, With<LoadingUI>>) {
 pub fn start_game_session(
     assets: Res<GameplayAssets>,
     mut song_clock: ResMut<SongPlayback>,
-    audio: Res<GameAudio>,
+    mut streaming_audio: ResMut<StreamingAudio>,
 ) {
     song_clock.reset();
 
-    if assets.audio_handle == Handle::default() {
-        warn!("No audio handle available to start gameplay audio");
+    let Some(audio_path) = assets.audio_path.as_ref() else {
+        warn!("No audio path available to start gameplay audio");
         return;
-    }
+    };
 
-    audio.stop();
-    let instance_handle = audio.play(assets.audio_handle.clone()).handle();
-    song_clock.mark_started(instance_handle);
+    match streaming_audio.play_from_path(audio_path) {
+        Ok(handle) => {
+            let state = handle.state();
+            info!(
+                "Started streaming {} (initial state {:?})",
+                audio_path.display(),
+                state
+            );
+            song_clock.mark_streaming(handle);
+        }
+        Err(err) => error!("Failed to start streaming audio: {err}"),
+    }
 }
 
 pub fn track_timeline(
     assets: Res<GameplayAssets>,
-    song_clock: Res<SongPlayback>,
-    audio_instances: Res<Assets<AudioInstance>>,
+    mut song_clock: ResMut<SongPlayback>,
     tabs: Res<Assets<Tab>>,
     mut timeline: ResMut<StringTimelineFeed>,
+    mut streaming_audio: ResMut<StreamingAudio>,
 ) {
-    let Some(current_time) = song_clock.current_time(audio_instances.as_ref()) else {
+    streaming_audio.drain_backend_errors();
+
+    let Some(current_time) = song_clock.current_time() else {
         return;
     };
 

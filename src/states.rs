@@ -1,3 +1,4 @@
+use crate::audio::StreamingAudio;
 use crate::components::StringTimelinePlugin;
 use crate::file::settings::setup_settings;
 use crate::file::theme::setup_theme;
@@ -105,7 +106,8 @@ pub struct GameplayPlugin;
 
 impl Plugin for GameplayPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameplayAssets>()
+        app.init_resource::<StreamingAudio>()
+            .init_resource::<GameplayAssets>()
             .init_resource::<SongPlayback>()
             .add_plugins(StringTimelinePlugin)
             .add_systems(OnEnter(AppState::Gameplay), setup_loading_ui)
