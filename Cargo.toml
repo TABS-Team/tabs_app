@@ -13,3 +13,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"
 dirs = "6.0"
 thiserror = "2.0"
+bevy_kira_audio = { version = "0.24", features = ["ogg"] }

@@ -3,6 +3,7 @@ use bevy::{
     window::{ExitCondition, PrimaryWindow, Window, WindowPlugin, WindowResolution},
     winit::WinitWindows,
 };
+use bevy_kira_audio::prelude::AudioPlugin as KiraAudioPlugin;
 
 use tabs_app::shaders::RegisterShadersPlugin;
 use tabs_app::states::{AppState, GameplayPlugin, SongSelectPlugin, StartupPlugin};
@@ -18,15 +19,18 @@ fn main() {
             ConfigPlugin,
             #[cfg(not(feature = "production"))]
             DebugPlugin,
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "TABS".to_string(),
-                    resolution: WindowResolution::new(600, 400),
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "TABS".to_string(),
+                        resolution: WindowResolution::new(600, 400),
+                        ..default()
+                    }),
+                    exit_condition: ExitCondition::OnPrimaryClosed,
                     ..default()
-                }),
-                exit_condition: ExitCondition::OnPrimaryClosed,
-                ..default()
-            }),
+                })
+                .disable::<bevy::audio::AudioPlugin>(),
+            KiraAudioPlugin,
             RegisterShadersPlugin,
             UiLayerPlugin,
             StartupPlugin,

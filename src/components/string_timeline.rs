@@ -10,7 +10,10 @@ use crate::states::GameState;
 
 const TIMELINE_WIDTH_PERCENT: f32 = 100.0;
 const TIMELINE_HEIGHT_PERCENT: f32 = 75.0;
-const TIMELINE_BLOCK_DURATION: f32 = 10.0;
+const DEFAULT_BLOCK_DURATION: f32 = 10.0;
+const MIN_BLOCK_DURATION: f32 = 1.2;
+const MAX_BLOCK_DURATION: f32 = 14.0;
+const TARGET_NOTE_SPACING_PERCENT: f32 = 0.12;
 const VISIBLE_BLOCKS: usize = 4;
 const NOTE_DIAMETER_PX: f32 = 28.0;
 const NOTE_FONT_SIZE: f32 = 16.0;
@@ -25,6 +28,10 @@ const MIN_FRET_SPAN: i32 = 4;
 const NOTE_GROUP_TOLERANCE: f32 = 0.08;
 const FRET_ZOOM_DURATION: f32 = 0.28;
 const FRET_ZOOM_START_SCALE: f32 = 0.85;
+const SUSTAIN_LINE_HEIGHT_PX: f32 = 6.0;
+const SLIDE_LINE_HEIGHT_PX: f32 = 8.0;
+const SLIDE_ARROW_FONT_SIZE: f32 = 18.0;
+const SLIDE_TARGET_DIAMETER_PX: f32 = 22.0;
 
 pub struct StringTimelinePlugin;
 
@@ -39,18 +46,35 @@ impl Plugin for StringTimelinePlugin {
     }
 }
 
-#[derive(Resource, Default, Clone)]
+#[derive(Resource, Clone)]
 pub struct StringTimelineFeed {
     pub string_count: usize,
     pub window_start: f32,
     pub window_end: f32,
     pub notes: Vec<TimelineNote>,
     pub current_time: f32,
+    pub block_duration: f32,
+    pub block_duration_locked: bool,
 }
 
 impl StringTimelineFeed {
     pub fn window_length(&self) -> f32 {
         (self.window_end - self.window_start).max(f32::EPSILON)
+    }
+}
+
+impl Default for StringTimelineFeed {
+    fn default() -> Self {
+        let block_duration = DEFAULT_BLOCK_DURATION;
+        Self {
+            string_count: 0,
+            window_start: 0.0,
+            window_end: block_duration * VISIBLE_BLOCKS as f32,
+            notes: Vec::new(),
+            current_time: 0.0,
+            block_duration,
+            block_duration_locked: false,
+        }
     }
 }
 
@@ -62,6 +86,21 @@ pub struct TimelineNote {
     pub fret: i32,
     pub techniques: Vec<Techniques>,
     pub additional_frets: Vec<i32>,
+    pub slide_target: Option<i32>,
+    pub slide_unpitched_target: Option<i32>,
+}
+
+impl TimelineNote {
+    fn primary_slide_target(&self) -> Option<i32> {
+        self.slide_target.or(self.slide_unpitched_target)
+    }
+
+    fn is_slide(&self) -> bool {
+        self.techniques
+            .iter()
+            .any(|technique| matches!(technique, Techniques::Slide))
+            && self.slide_target.or(self.slide_unpitched_target).is_some()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,12 +125,23 @@ impl NoteKey {
                 .wrapping_mul(41)
                 .wrapping_add((*extra as i64 + 64) as u64);
         }
+        let mut slide_hash = 0u64;
+        if let Some(target) = note.slide_target {
+            slide_hash = slide_hash
+                .wrapping_mul(53)
+                .wrapping_add((target as i64 + 64) as u64);
+        }
+        if let Some(target) = note.slide_unpitched_target {
+            slide_hash = slide_hash
+                .wrapping_mul(67)
+                .wrapping_add((target as i64 + 64) as u64);
+        }
         let metadata_hash = technique_hash.wrapping_mul(131).wrapping_add(extra_hash);
         Self {
             time_bits: note.time.to_bits(),
             string_index: note.string_index,
             fret: note.fret,
-            metadata_hash,
+            metadata_hash: metadata_hash.wrapping_mul(73).wrapping_add(slide_hash),
         }
     }
 }
@@ -100,6 +150,22 @@ impl NoteKey {
 enum FretMarkerRole {
     Primary,
     Additional(i32),
+    SlideBar,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct SustainSegmentKey {
+    note: NoteKey,
+    block_index: i32,
+}
+
+impl SustainSegmentKey {
+    fn new(note: &TimelineNote, block_index: i32) -> Self {
+        SustainSegmentKey {
+            note: NoteKey::new(note),
+            block_index,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,6 +186,13 @@ impl FretMarkerKey {
         FretMarkerKey {
             note: NoteKey::new(note),
             role: FretMarkerRole::Additional(fret),
+        }
+    }
+
+    fn slide_bar(note: &TimelineNote) -> Self {
+        FretMarkerKey {
+            note: NoteKey::new(note),
+            role: FretMarkerRole::SlideBar,
         }
     }
 }
@@ -206,6 +279,23 @@ struct BlockView {
 struct BlockRow {
     note_container: Entity,
     rendered_notes: HashMap<NoteKey, Entity>,
+    rendered_sustain_segments: HashMap<SustainSegmentKey, Entity>,
+    rendered_slide_segments: HashMap<SustainSegmentKey, SlideSegmentView>,
+}
+
+struct SlideSegmentView {
+    line: Entity,
+    target_circle: Option<Entity>,
+}
+
+struct SlideSegmentRender<'a> {
+    key: SustainSegmentKey,
+    left_percent: f32,
+    width_percent: f32,
+    terminal: bool,
+    terminal_percent: f32,
+    note: &'a TimelineNote,
+    target_fret: Option<i32>,
 }
 
 #[derive(Component)]
@@ -360,7 +450,9 @@ fn setup_timeline_ui(
     themes: Res<Themes>,
 ) {
     feed.window_start = 0.0;
-    feed.window_end = timeline_window_seconds();
+    feed.block_duration = DEFAULT_BLOCK_DURATION;
+    feed.block_duration_locked = false;
+    feed.window_end = feed.block_duration * VISIBLE_BLOCKS as f32;
     feed.current_time = 0.0;
     feed.string_count = 0;
     feed.notes.clear();
@@ -668,7 +760,7 @@ fn update_timeline(
             view.cached_string_count = feed.string_count;
         }
 
-        let block_duration = TIMELINE_BLOCK_DURATION;
+        let block_duration = feed.block_duration.max(MIN_BLOCK_DURATION);
         let current_block_index = (feed.current_time / block_duration).floor().max(0.0) as i32;
         let block_progress = ((feed.current_time - current_block_index as f32 * block_duration)
             / block_duration)
@@ -1071,6 +1163,8 @@ fn spawn_block(
         rows.push(BlockRow {
             note_container,
             rendered_notes: HashMap::new(),
+            rendered_sustain_segments: HashMap::new(),
+            rendered_slide_segments: HashMap::new(),
         });
     }
 
@@ -1092,7 +1186,7 @@ fn render_notes(
     current_block_index: i32,
     technique_registry: &TechniqueVisualizationRegistry,
 ) {
-    let block_duration = TIMELINE_BLOCK_DURATION;
+    let block_duration = feed.block_duration.max(MIN_BLOCK_DURATION);
     let string_colors = view.string_colors.clone();
     let default_string_color = Color::srgb(0.235, 0.549, 1.0);
 
@@ -1105,34 +1199,91 @@ fn render_notes(
         let block_end = block_start + block_duration;
         let block_is_past = block.index < current_block_index;
 
-        let mut desired_by_string: Vec<Vec<(NoteKey, f32, &TimelineNote)>> =
+        let mut desired_bubbles: Vec<Vec<(NoteKey, f32, &TimelineNote)>> =
             vec![Vec::new(); block.rows.len()];
+        let mut desired_sustains: Vec<Vec<(SustainSegmentKey, f32, f32, &TimelineNote)>> =
+            vec![Vec::new(); block.rows.len()];
+        let mut desired_slide_segments: Vec<Vec<SlideSegmentRender>> =
+            (0..block.rows.len()).map(|_| Vec::new()).collect();
 
         for note in &feed.notes {
-            if note.time < block_start || note.time >= block_end {
-                continue;
-            }
-
             if note.string_index >= block.rows.len() {
                 continue;
             }
 
-            let progress = ((note.time - block_start) / block_duration).clamp(0.0, 1.0);
-            let left_percent = progress * 100.0;
-            let key = NoteKey::new(note);
-            desired_by_string[note.string_index].push((key, left_percent, note));
+            let sustain = note.sustain.max(0.0);
+            let note_start = note.time;
+            let note_end = (note.time + sustain).max(note_start);
+
+            if note_end <= block_start || note_start >= block_end {
+                continue;
+            }
+
+            let overlap_start = note_start.max(block_start);
+            let overlap_end = note_end.min(block_end);
+
+            if note_start >= block_start && note_start < block_end {
+                let progress = ((note_start - block_start) / block_duration).clamp(0.0, 1.0);
+                let left_percent = progress * 100.0;
+                let key = NoteKey::new(note);
+                desired_bubbles[note.string_index].push((key, left_percent, note));
+            }
+
+            if overlap_end > overlap_start {
+                let start_percent =
+                    ((overlap_start - block_start) / block_duration).clamp(0.0, 1.0) * 100.0;
+                let end_percent =
+                    ((overlap_end - block_start) / block_duration).clamp(0.0, 1.0) * 100.0;
+                let width_percent = (end_percent - start_percent).max(0.0);
+                if width_percent > 0.0 {
+                    let segment_key = SustainSegmentKey::new(note, block.index);
+                    let is_slide = note.is_slide();
+                    let slide_target = note.primary_slide_target();
+                    if is_slide && slide_target.is_some() {
+                        let terminal = note_end <= block_end + f32::EPSILON;
+                        desired_slide_segments[note.string_index].push(SlideSegmentRender {
+                            key: segment_key,
+                            left_percent: start_percent,
+                            width_percent,
+                            terminal,
+                            terminal_percent: end_percent,
+                            note,
+                            target_fret: slide_target,
+                        });
+                    } else {
+                        desired_sustains[note.string_index].push((
+                            segment_key,
+                            start_percent,
+                            width_percent,
+                            note,
+                        ));
+                    }
+                }
+            }
         }
 
         for (string_idx, row) in block.rows.iter_mut().enumerate() {
-            let desired = desired_by_string
+            let desired = desired_bubbles
                 .get(string_idx)
                 .map(|entries| entries.as_slice())
                 .unwrap_or_default();
 
-            let mut desired_keys = Vec::with_capacity(desired.len());
+            let desired_segments = desired_sustains
+                .get(string_idx)
+                .map(|entries| entries.as_slice())
+                .unwrap_or_default();
+
+            let desired_slide = desired_slide_segments
+                .get(string_idx)
+                .map(|entries| entries.as_slice())
+                .unwrap_or_default();
+
+            let mut desired_note_keys = Vec::with_capacity(desired.len());
+            let mut desired_segment_keys = Vec::with_capacity(desired_segments.len());
+            let mut desired_slide_keys = Vec::with_capacity(desired_slide.len());
 
             for (key, left_percent, note) in desired {
-                desired_keys.push(*key);
+                desired_note_keys.push(*key);
                 if row.rendered_notes.contains_key(key) {
                     continue;
                 }
@@ -1198,10 +1349,176 @@ fn render_notes(
                 row.rendered_notes.insert(*key, note_entity);
             }
 
+            for (segment_key, left_percent, width_percent, note) in desired_segments {
+                desired_segment_keys.push(*segment_key);
+                if row.rendered_sustain_segments.contains_key(segment_key) {
+                    continue;
+                }
+
+                let palette_color = if string_colors.is_empty() {
+                    default_string_color
+                } else {
+                    string_colors[string_idx % string_colors.len()]
+                };
+                let style = technique_registry.style_for(&note.techniques);
+                let sustain_color = style.timeline_background.unwrap_or(palette_color);
+
+                let line_entity = commands
+                    .spawn((
+                        Node {
+                            width: Val::Percent(width_percent.clamp(0.0, 100.0)),
+                            height: Val::Px(SUSTAIN_LINE_HEIGHT_PX),
+                            position_type: PositionType::Absolute,
+                            left: Val::Percent(left_percent.clamp(0.0, 100.0)),
+                            top: Val::Percent(50.0),
+                            margin: UiRect {
+                                left: Val::Px(0.0),
+                                right: Val::Px(0.0),
+                                top: Val::Px(-(SUSTAIN_LINE_HEIGHT_PX / 2.0)),
+                                bottom: Val::Px(0.0),
+                            },
+                            ..default()
+                        },
+                        BackgroundColor(sustain_color),
+                        BorderRadius::all(Val::Px(SUSTAIN_LINE_HEIGHT_PX / 2.0)),
+                        ZIndex(1),
+                    ))
+                    .id();
+
+                commands.entity(row.note_container).add_child(line_entity);
+                row.rendered_sustain_segments
+                    .insert(*segment_key, line_entity);
+            }
+
+            for slide_data in desired_slide {
+                desired_slide_keys.push(slide_data.key);
+                if row.rendered_slide_segments.contains_key(&slide_data.key) {
+                    continue;
+                }
+
+                let palette_color = if string_colors.is_empty() {
+                    default_string_color
+                } else {
+                    string_colors[string_idx % string_colors.len()]
+                };
+                let style = technique_registry.style_for(&slide_data.note.techniques);
+                let slide_color = style.timeline_background.unwrap_or(palette_color);
+
+                let mut line_node = Node {
+                    width: Val::Percent(slide_data.width_percent.clamp(0.0, 100.0)),
+                    height: Val::Px(SLIDE_LINE_HEIGHT_PX),
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(slide_data.left_percent.clamp(0.0, 100.0)),
+                    top: Val::Percent(50.0),
+                    margin: UiRect {
+                        left: Val::Px(0.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(-(SLIDE_LINE_HEIGHT_PX / 2.0)),
+                        bottom: Val::Px(0.0),
+                    },
+                    align_items: AlignItems::Center,
+                    ..default()
+                };
+                if slide_data.terminal {
+                    line_node.justify_content = JustifyContent::FlexEnd;
+                }
+
+                let line_entity = commands
+                    .spawn((
+                        line_node,
+                        BackgroundColor(slide_color),
+                        BorderRadius::all(Val::Px(SLIDE_LINE_HEIGHT_PX / 2.0)),
+                        ZIndex(1),
+                    ))
+                    .id();
+
+                let mut segment_view = SlideSegmentView {
+                    line: line_entity,
+                    target_circle: None,
+                };
+
+                if slide_data.terminal {
+                    let arrow_entity = commands
+                        .spawn((
+                            Node {
+                                width: Val::Auto,
+                                height: Val::Auto,
+                                margin: UiRect {
+                                    left: Val::Px(4.0),
+                                    right: Val::Px(0.0),
+                                    top: Val::Px(-(SLIDE_ARROW_FONT_SIZE * 0.15)),
+                                    bottom: Val::Px(0.0),
+                                },
+                                ..default()
+                            },
+                            ZIndex(2),
+                        ))
+                        .with_children(|arrow_parent| {
+                            arrow_parent.spawn((
+                                Text::new(">"),
+                                TextFont {
+                                    font_size: SLIDE_ARROW_FONT_SIZE,
+                                    ..default()
+                                },
+                                TextColor(Color::WHITE),
+                            ));
+                        })
+                        .id();
+                    commands.entity(line_entity).add_child(arrow_entity);
+
+                    if let Some(target_fret) = slide_data.target_fret {
+                        let circle_entity = commands
+                            .spawn((
+                                Node {
+                                    width: Val::Px(SLIDE_TARGET_DIAMETER_PX),
+                                    height: Val::Px(SLIDE_TARGET_DIAMETER_PX),
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Percent(
+                                        slide_data.terminal_percent.clamp(0.0, 100.0),
+                                    ),
+                                    top: Val::Percent(50.0),
+                                    margin: UiRect {
+                                        left: Val::Px(-(SLIDE_TARGET_DIAMETER_PX / 2.0)),
+                                        right: Val::Px(0.0),
+                                        top: Val::Px(-(SLIDE_TARGET_DIAMETER_PX / 2.0)),
+                                        bottom: Val::Px(0.0),
+                                    },
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },
+                                BackgroundColor(slide_color),
+                                BorderRadius::all(Val::Px(SLIDE_TARGET_DIAMETER_PX / 2.0)),
+                                ZIndex(2),
+                            ))
+                            .id();
+
+                        commands.entity(circle_entity).with_children(|parent| {
+                            parent.spawn((
+                                Text::new(target_fret.to_string()),
+                                TextFont {
+                                    font_size: NOTE_FONT_SIZE,
+                                    ..default()
+                                },
+                                TextColor(Color::WHITE),
+                            ));
+                        });
+
+                        commands.entity(row.note_container).add_child(circle_entity);
+                        segment_view.target_circle = Some(circle_entity);
+                    }
+                }
+
+                commands.entity(row.note_container).add_child(line_entity);
+
+                row.rendered_slide_segments
+                    .insert(slide_data.key, segment_view);
+            }
+
             if !block_is_past {
                 let mut stale_keys = Vec::new();
                 for key in row.rendered_notes.keys() {
-                    if !desired_keys.contains(key) {
+                    if !desired_note_keys.contains(key) {
                         stale_keys.push(*key);
                     }
                 }
@@ -1209,6 +1526,35 @@ fn render_notes(
                 for key in stale_keys {
                     if let Some(entity) = row.rendered_notes.remove(&key) {
                         commands.entity(entity).despawn();
+                    }
+                }
+
+                let mut stale_segments = Vec::new();
+                for key in row.rendered_sustain_segments.keys() {
+                    if !desired_segment_keys.contains(key) {
+                        stale_segments.push(*key);
+                    }
+                }
+
+                for key in stale_segments {
+                    if let Some(entity) = row.rendered_sustain_segments.remove(&key) {
+                        commands.entity(entity).despawn();
+                    }
+                }
+
+                let mut stale_slide_segments = Vec::new();
+                for key in row.rendered_slide_segments.keys() {
+                    if !desired_slide_keys.contains(key) {
+                        stale_slide_segments.push(*key);
+                    }
+                }
+
+                for key in stale_slide_segments {
+                    if let Some(segment) = row.rendered_slide_segments.remove(&key) {
+                        if let Some(circle) = segment.target_circle {
+                            commands.entity(circle).despawn();
+                        }
+                        commands.entity(segment.line).despawn();
                     }
                 }
             }
@@ -1310,6 +1656,7 @@ fn update_fret_view(
             let key = match role {
                 FretMarkerRole::Primary => FretMarkerKey::primary(note),
                 FretMarkerRole::Additional(extra) => FretMarkerKey::additional(note, extra),
+                FretMarkerRole::SlideBar => FretMarkerKey::slide_bar(note),
             };
 
             let palette_color = if string_colors.is_empty() {
@@ -1382,6 +1729,66 @@ fn update_fret_view(
 
         for extra in &note.additional_frets {
             maybe_spawn_marker(*extra, FretMarkerRole::Additional(*extra), false);
+        }
+
+        if note.is_slide() {
+            if let Some(target_fret) = note.primary_slide_target() {
+                if note.sustain > f32::EPSILON {
+                    let progress = ((feed.current_time - note.time) / note.sustain).clamp(0.0, 1.0);
+                    if progress > 0.0 {
+                        let start_percent = fret_left_percent(note.fret, &range);
+                        let target_percent = fret_left_percent(target_fret, &range);
+                        let current_percent =
+                            start_percent + (target_percent - start_percent) * progress;
+                        let left_percent = start_percent.min(current_percent);
+                        let width_percent = (current_percent - start_percent).abs();
+
+                        if width_percent > 0.0 {
+                            let palette_color = if string_colors.is_empty() {
+                                Color::srgb(0.55, 0.75, 0.95)
+                            } else {
+                                string_colors[note.string_index % string_colors.len()]
+                            };
+
+                            let style = technique_registry.style_for(&note.techniques);
+                            let bar_color = style.fret_background.unwrap_or(palette_color);
+
+                            let bar_entity = commands
+                                .spawn((
+                                    Node {
+                                        width: Val::Percent(width_percent.clamp(0.0, 100.0)),
+                                        height: Val::Px(SLIDE_LINE_HEIGHT_PX),
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Percent(left_percent.clamp(0.0, 100.0)),
+                                        top: Val::Percent(
+                                            string_position_percent(
+                                                note.string_index,
+                                                feed.string_count,
+                                            )
+                                            .clamp(0.0, 100.0),
+                                        ),
+                                        margin: UiRect {
+                                            left: Val::Px(0.0),
+                                            right: Val::Px(0.0),
+                                            top: Val::Px(-(SLIDE_LINE_HEIGHT_PX / 2.0)),
+                                            bottom: Val::Px(0.0),
+                                        },
+                                        ..default()
+                                    },
+                                    BackgroundColor(bar_color),
+                                    BorderRadius::all(Val::Px(SLIDE_LINE_HEIGHT_PX / 2.0)),
+                                    FretMarker,
+                                    ZIndex(2),
+                                ))
+                                .id();
+
+                            commands.entity(marker_layer).add_child(bar_entity);
+                            view.fret_markers
+                                .insert(FretMarkerKey::slide_bar(note), bar_entity);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1758,10 +2165,26 @@ fn resolve_string_palette(settings: &Settings, themes: &Themes) -> Vec<Color> {
     fallback_instrument_key_palette()
 }
 
-pub fn timeline_window_seconds() -> f32 {
-    TIMELINE_BLOCK_DURATION * VISIBLE_BLOCKS as f32
+pub fn timeline_window_seconds(feed: &StringTimelineFeed) -> f32 {
+    feed.block_duration * VISIBLE_BLOCKS as f32
 }
 
-pub fn timeline_block_duration() -> f32 {
-    TIMELINE_BLOCK_DURATION
+pub fn timeline_block_duration(feed: &StringTimelineFeed) -> f32 {
+    feed.block_duration
+}
+
+pub fn clamp_block_duration(duration: f32) -> f32 {
+    duration.clamp(MIN_BLOCK_DURATION, MAX_BLOCK_DURATION)
+}
+
+pub fn default_block_duration() -> f32 {
+    DEFAULT_BLOCK_DURATION
+}
+
+pub fn target_note_spacing_percent() -> f32 {
+    TARGET_NOTE_SPACING_PERCENT
+}
+
+pub fn visible_block_count() -> usize {
+    VISIBLE_BLOCKS
 }
