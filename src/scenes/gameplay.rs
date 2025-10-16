@@ -22,6 +22,7 @@ const MIN_NOTES_FOR_TEMPO: usize = 8;
 const MIN_INTERVAL_SECONDS: f32 = 0.01;
 const MAX_INTERVAL_SECONDS: f32 = 4.0;
 const BEATS_PER_BLOCK: f32 = 4.0;
+const MIN_DIFF_SECONDS: f32 = 0.0001;
 
 #[derive(Resource, Default)]
 pub struct GameplayAssets {
@@ -425,7 +426,7 @@ fn estimate_beat_duration(times: &mut [f32]) -> Option<f32> {
         if diff < MIN_INTERVAL_SECONDS || diff > MAX_INTERVAL_SECONDS {
             continue;
         }
-        let mut bpm = 60.0 / diff.max(0.0001);
+        let mut bpm = 60.0 / diff.max(MIN_DIFF_SECONDS);
         while bpm < 60.0 {
             bpm *= 2.0;
         }
@@ -446,7 +447,7 @@ fn estimate_beat_duration(times: &mut [f32]) -> Option<f32> {
         bpms[bpms.len() / 2]
     };
 
-    let beat = 60.0 / median_bpm.max(0.0001);
+    let beat = 60.0 / median_bpm.max(MIN_DIFF_SECONDS);
     Some(beat.clamp(0.25, 1.5))
 }
 

@@ -32,6 +32,7 @@ const SUSTAIN_LINE_HEIGHT_PX: f32 = 6.0;
 const SLIDE_LINE_HEIGHT_PX: f32 = 8.0;
 const SLIDE_ARROW_FONT_SIZE: f32 = 18.0;
 const SLIDE_TARGET_DIAMETER_PX: f32 = 22.0;
+const SMOOTHING_ALPHA: f32 = 0.3;
 
 pub struct StringTimelinePlugin;
 
@@ -2131,7 +2132,7 @@ fn update_indicator(
         let smoothed_progress = if let Some(previous_index) = view.indicator_block_index {
             if previous_index == current_block_index {
                 let blended = view.indicator_block_progress
-                    + (block_progress - view.indicator_block_progress) * 0.3;
+                    + (block_progress - view.indicator_block_progress) * SMOOTHING_ALPHA;
                 view.indicator_block_progress = blended;
                 blended
             } else {
