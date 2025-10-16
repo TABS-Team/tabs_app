@@ -10,12 +10,13 @@ use bevy::{
     prelude::*,
     reflect::TypePath,
 };
+use bevy_kira_audio::prelude::AudioSource as KiraAudioSource;
 
 #[derive(Asset, TypePath, Debug)]
 pub struct Song {
     pub metadata: SongMetadata,
     pub album_art: Handle<Image>,
-    pub audio_preview: Handle<AudioSource>,
+    pub audio_preview: Handle<KiraAudioSource>,
 }
 
 #[derive(Asset, TypePath, Debug, Clone)]
@@ -104,7 +105,7 @@ pub struct SongMetadata {
     pub arrangements: HashMap<String, SongArrangementMetadata>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 pub enum Techniques {
     Slide,
     Bend,
@@ -215,9 +216,10 @@ impl AssetLoader for SongLoader {
         let album_art: Handle<Image> = load_context
             .loader()
             .load::<Image>(folder.join("album_art.png"));
-        let audio_preview: Handle<AudioSource> = load_context
+        let audio_preview_path = folder.join("preview.wav");
+        let audio_preview: Handle<KiraAudioSource> = load_context
             .loader()
-            .load::<AudioSource>(folder.join("preview.ogg"));
+            .load::<KiraAudioSource>(audio_preview_path);
 
         Ok(Song {
             metadata,
