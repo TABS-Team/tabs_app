@@ -6,12 +6,16 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Resource, Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
+    #[serde(default = "default_start_theme")]
     pub start_theme: String,
+    #[serde(default)]
     pub window: WindowSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WindowSettings {
     pub width: f32,
     pub height: f32,
@@ -20,13 +24,23 @@ pub struct WindowSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            start_theme: "default".to_string(),
-            window: WindowSettings {
-                width: 800.0,
-                height: 600.0,
-            },
+            start_theme: default_start_theme(),
+            window: WindowSettings::default(),
         }
     }
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            width: 800.0,
+            height: 600.0,
+        }
+    }
+}
+
+fn default_start_theme() -> String {
+    "default".to_string()
 }
 
 pub fn load_or_create_settings(path: &PathBuf) -> Settings {
